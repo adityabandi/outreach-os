@@ -130,5 +130,7 @@ await q(`delete from campaign_version_recipients where campaign_version_id in (s
 await q(`delete from campaign_versions where campaign_id=$1`, [cid]);
 await q(`delete from campaigns where id=$1`, [cid]);
 await q(`delete from suppression_entries where normalized_value='sofia@herbaldaily.io'`);
+await q(`delete from outbox_messages where subject in ('Hi Sofia','Hi Arjun') or subject like 'Re: Hi%'`);
+await q(`delete from job_runs where job_type='campaign.schedule'`);
 await sys.end();
 process.exit(fail > 0 ? 1 : 0);
