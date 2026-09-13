@@ -130,24 +130,26 @@ const ar1 = await one(`insert into approval_requests (organization_id, workspace
   values ($1,$2,'campaign_version',$3,$4,'approved',$5,$6, now() - interval '2 days','Wave 1 looks good - send it.') returning id`,
   [orgId, A, ver1.id, hash1, lara.id, aditya.id]);
 const run1 = await one(`insert into campaign_runs (campaign_version_id, status, launched_by, launched_at)
-  values ($1,'running',$2, now() - interval '1 day') returning id`, [ver1.id, lara.id]);
+  values ($1,'running',$2, now() - interval '6 days') returning id`, [ver1.id, lara.id]);
 
 // deliveries: 5 sent step1, maya+elena got step2 sent, arjun step2 scheduled
 const sentEmails = ["maya@wildrootwellness.com","elena@pranaflow.co","james@groundedbody.com","sofia@herbaldaily.io","arjun@vedicliving.in"];
+const sentDaysAgo: Record<string, number> = { maya: 6, elena: 5, james: 4, sofia: 2, arjun: 1 };
 for (const e of sentEmails) {
   const { personId, contactId } = peopleIds[e];
   const pmid = `mock_wave1_${e.split("@")[0]}`;
+  const sentAt = new Date(Date.now() - sentDaysAgo[e.split("@")[0]] * 86400_000);
   const d = await one(`insert into message_deliveries
     (organization_id, workspace_id, campaign_run_id, campaign_version_id, person_id, contact_point_id, sequence_step_id,
      step_number, sender_identity_id, provider_message_id, idempotency_key, scheduled_at, sent_at, status, thread_ref,
      subject_rendered, body_rendered)
-    values ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10, now() - interval '1 day', now() - interval '1 day', 'sent', $11,
+    values ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10, $14, $14, 'sent', $11,
             $12, $13) returning id`,
     [orgId, A, run1.id, ver1.id, personId, contactId, step1.id, senderLara.id, pmid, `${ver1.id}:${personId}:1`,
      `thr_${pmid}`, `${e.split("@")[0]}, your Ayurveda series + a partnership idea`,
-     `Hi ${e.split("@")[0]},\n\nI have been following your work - your recent morning-ritual series is exactly the kind of grounded Ayurveda content we love...`]);
+     `Hi ${e.split("@")[0]},\n\nI have been following your work - your recent morning-ritual series is exactly the kind of grounded Ayurveda content we love...`, sentAt]);
   await q(`insert into delivery_events (organization_id, workspace_id, message_delivery_id, provider_event_id, type, occurred_at)
-    values ($1,$2,$3,$4,'sent', now() - interval '1 day')`, [orgId, A, d.id, `evt_${pmid}`]);
+    values ($1,$2,$3,$4,'sent', $5)`, [orgId, A, d.id, `evt_${pmid}`, sentAt]);
   await q(`insert into outbox_messages (workspace_id, message_delivery_id, from_address, to_address, subject, body, provider_message_id, thread_ref)
     values ($1,$2,'lara@ayurvedanest.org',$3,$4,$5,$6,$7)`,
     [A, d.id, e, `${e.split("@")[0]}, your Ayurveda series + a partnership idea`, "Hi ...", pmid, `thr_${pmid}`]);
@@ -162,16 +164,17 @@ for (const e of ["tom@ritualmorning.com","ravi@prakritipath.in"]) {
     [orgId, A, run1.id, ver1.id, personId, contactId, step1.id, senderLara.id, `${ver1.id}:${personId}:1`]);
 }
 // replies: maya interested, elena question, james unsubscribe (suppressed)
-const replies: [string, string, string][] = [
-  ["maya@wildrootwellness.com","Re: your Ayurveda series + a partnership idea","Hi Lara, this sounds interesting - tell me more about the commission terms. Would love to talk."],
-  ["elena@pranaflow.co","Re: your Ayurveda series + a partnership idea","Thanks for reaching out! How does the partner dashboard work and what does my audience pay after the trial?"],
-  ["james@groundedbody.com","Re: your Ayurveda series + a partnership idea","Please remove me from your list. Unsubscribe."],
+const replies: [string, string, string, number][] = [
+  ["maya@wildrootwellness.com","Re: your Ayurveda series + a partnership idea","Hi Lara, this sounds interesting - tell me more about the commission terms. Would love to talk.", 4],
+  ["elena@pranaflow.co","Re: your Ayurveda series + a partnership idea","Thanks for reaching out! How does the partner dashboard work and what does my audience pay after the trial?", 2],
+  ["james@groundedbody.com","Re: your Ayurveda series + a partnership idea","Please remove me from your list. Unsubscribe.", 1],
 ];
-for (const [from, subject, body] of replies) {
+for (const [from, subject, body, replyDaysAgo] of replies) {
   const { personId } = peopleIds[from];
   const im = await one(`insert into inbound_messages (organization_id, workspace_id, provider_message_id, thread_ref, sender_contact, person_id, subject, body, received_at)
-    values ($1,$2,$3,$4,$5,$6,$7,$8, now() - interval '6 hours') returning id`,
-    [orgId, A, `in_${from.split("@")[0]}`, `thr_mock_wave1_${from.split("@")[0]}`, from, personId, subject, body]);
+    values ($1,$2,$3,$4,$5,$6,$7,$8, $9) returning id`,
+    [orgId, A, `in_${from.split("@")[0]}`, `thr_mock_wave1_${from.split("@")[0]}`, from, personId, subject, body,
+     new Date(Date.now() - replyDaysAgo * 86400_000)]);
   const cat = from.startsWith("maya") ? "interested" : from.startsWith("elena") ? "question" : "unsubscribe";
   const conf = cat === "unsubscribe" ? 0.98 : 0.86;
   await q(`insert into reply_classifications (inbound_message_id, category, confidence, extracted_json) values ($1,$2,$3,$4)`,
@@ -184,8 +187,9 @@ for (const [from, subject, body] of replies) {
 }
 await q(`insert into suppression_entries (organization_id, workspace_id, scope, normalized_value, reason, source)
   values ($1,$2,'workspace','james@groundedbody.com','unsubscribe reply','inbound') on conflict do nothing`, [orgId, A]);
-await q(`insert into conversions (organization_id, workspace_id, person_id, campaign_id, event_type, value_amount, currency, attribution_json)
-  values ($1,$2,$3,$4,'meeting',null,null,'{"rule":"direct_thread"}'), ($1,$2,$5,$4,'signup',19,'USD','{"rule":"direct_thread"}')`,
+await q(`insert into conversions (organization_id, workspace_id, person_id, campaign_id, event_type, value_amount, currency, attribution_json, occurred_at)
+  values ($1,$2,$3,$4,'meeting',null,null,'{"rule":"direct_thread"}', now() - interval '2 days'),
+         ($1,$2,$5,$4,'signup',19,'USD','{"rule":"direct_thread"}', now() - interval '12 hours')`,
   [orgId, A, peopleIds["maya@wildrootwellness.com"].personId, camp1.id, peopleIds["elena@pranaflow.co"].personId]);
 
 // Campaign 2: APPROVAL PENDING (for the review screen). v1 was rejected; v2 shows the diff view.
