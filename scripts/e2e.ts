@@ -7,6 +7,7 @@ import {
 import { processDueDeliveries, ingestReply } from "@/server/delivery";
 import { importProspectsCsv, addSuppression, liftSuppression } from "@/server/prospects";
 import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
+import { updateWorkspacePolicy } from "@/server/settings";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
 const sys = new pg.Client("postgres://outreach:outreach@localhost:5433/outreach_os");
@@ -147,6 +148,16 @@ const stillActive = (await q(`select count(*)::int n from suppression_entries wh
 const supAudit = (await q(`select distinct action from audit_events where action in ('suppression.add','suppression.lift') and metadata_json->>'value'='e2e-blocked@example.com'`)).rows.map((x) => x.action);
 check("suppression add + lift lifecycle audited", stillActive === 0 && supAudit.includes("suppression.add") && supAudit.includes("suppression.lift"), supAudit.join(","));
 
+// 12. workspace policy: versions forward, admin-only
+const beforePol = (await q(`select max(version)::int v from workspace_policies where workspace_id=$1`, [wsA.id])).rows[0].v;
+let operatorBlocked = false;
+try { await updateWorkspacePolicy(laraCtx, { dailySendCap: 40, perDomainCap: 4 }); } catch (e: any) { operatorBlocked = e.name === "AuthzError"; }
+const adminCtx: WorkspaceContext = { ...adiCtx, roles: ["workspace_admin", "approver"] };
+const upd = await updateWorkspacePolicy(adminCtx, { dailySendCap: 60, perDomainCap: 6 });
+const afterPol = (await q(`select max(version)::int v, (select daily_send_cap from workspace_policies where workspace_id=$1 order by version desc limit 1) cap from workspace_policies where workspace_id=$1`, [wsA.id])).rows[0];
+const polAudit = (await q(`select count(*)::int n from audit_events where action='policy.update' and metadata_json->'daily_send_cap'->>'to'='60'`)).rows[0].n;
+check("policy versions forward, admin-only, audited", operatorBlocked && upd.ok && afterPol.v === beforePol + 1 && afterPol.cap === 60 && polAudit === 1, `v${beforePol}->v${afterPol.v}`);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -169,6 +180,8 @@ await q(`delete from companies where normalized_domain='e2e.example'`);
 await q(`delete from audit_events where target_id in (select id from prospect_lists where name like 'E2E Import%')`);
 await q(`delete from prospect_lists where name like 'E2E Import%'`);
 await q(`delete from suppression_entries where normalized_value='e2e-blocked@example.com'`);
+await q(`delete from audit_events where action='policy.update'`);
+await q(`delete from workspace_policies where workspace_id=$1 and version > 1`, [wsA.id]);
 await q(`delete from outbox_messages where subject in ('Hi Sofia','Hi Arjun') or subject like 'Re: Hi%'`);
 await q(`delete from job_runs where job_type='campaign.schedule'`);
 await sys.end();

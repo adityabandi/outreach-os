@@ -22,10 +22,12 @@ export default async function ProspectsPage({ params, searchParams }: { params: 
         order by p.full_name`);
     return r.rows;
   });
+  const q = (sp.q ?? "").toLowerCase();
   const shown = rows.filter((r: any) =>
-    filter === "research" ? r.disposition === "research_queue" :
-    filter === "qualified" ? r.disposition === "qualified" :
-    filter === "suppressed" ? r.suppressed : true);
+    (filter === "research" ? r.disposition === "research_queue" :
+     filter === "qualified" ? r.disposition === "qualified" :
+     filter === "suppressed" ? r.suppressed : true) &&
+    (!q || r.full_name.toLowerCase().includes(q) || (r.normalized_value ?? "").includes(q) || (r.company ?? "").toLowerCase().includes(q)));
   const counts = {
     all: rows.length,
     qualified: rows.filter((r: any) => r.disposition === "qualified").length,
@@ -41,12 +43,17 @@ export default async function ProspectsPage({ params, searchParams }: { params: 
         </div>
         <LinkButton href={`/w/${slug}/prospects/import`} kind="primary">Import CSV</LinkButton>
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {([["all", "All"], ["qualified", "Qualified"], ["research", "Research queue"], ["suppressed", "Suppressed"]] as const).map(([k, label]) => (
-          <Link key={k} href={`/w/${slug}/prospects?filter=${k}`}>
+          <Link key={k} href={`/w/${slug}/prospects?filter=${k}${sp.q ? `&q=${encodeURIComponent(sp.q)}` : ""}`}>
             <Pill tone={filter === k ? "amber" : "gray"}>{label} · {counts[k]}</Pill>
           </Link>
         ))}
+        <form method="get" className="ml-auto flex gap-2">
+          <input type="hidden" name="filter" value={filter} />
+          <input name="q" className="input !w-64 !py-1.5 text-xs" placeholder="Search name, email, company" defaultValue={sp.q ?? ""} />
+          <button className="btn-ghost !px-2.5 !py-1 text-xs">Search</button>
+        </form>
       </div>
       <Panel>
         {shown.length === 0 ? <Empty title="Nothing here" hint="Import a CSV to add prospects." /> : (

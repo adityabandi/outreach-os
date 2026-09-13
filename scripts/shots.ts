@@ -23,6 +23,7 @@ const shots: [string, string][] = [
   ["campaign-running", `/w/ayurveda-nest/campaigns/${camp}`],
   ["approval-review", `/w/ayurveda-nest/approvals/${approval}`],
   ["prospects", `/w/ayurveda-nest/prospects`],
+  ["prospects-search", `/w/ayurveda-nest/prospects?q=herbal`],
   ["prospect-detail", `/w/ayurveda-nest/prospects/${person}`],
   ["replies", `/w/ayurveda-nest/replies`],
   ["analytics", `/w/ayurveda-nest/analytics`],

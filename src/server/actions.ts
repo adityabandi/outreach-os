@@ -11,6 +11,7 @@ import {
 import { importProspectsCsv, setContactVerification, addSuppression, liftSuppression } from "@/server/prospects";
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
 import { setReplyDraftStatus, updateReplyDraft } from "@/server/replies";
+import { updateWorkspacePolicy } from "@/server/settings";
 import type { CampaignPayload } from "@/domain/payload";
 
 export async function loginAction(formData: FormData) {
@@ -145,6 +146,15 @@ export async function addSuppressionAction(slug: string, formData: FormData) {
   const expires = String(formData.get("expires_at") ?? "");
   await addSuppression(ctx, String(formData.get("value") ?? ""), String(formData.get("scope") ?? "workspace"), String(formData.get("reason") ?? "manual"), expires || null);
   revalidatePath(`/w/${slug}/suppressions`);
+}
+
+export async function updatePolicyAction(slug: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await updateWorkspacePolicy(ctx, {
+    dailySendCap: Number(formData.get("daily_send_cap")),
+    perDomainCap: Number(formData.get("per_domain_cap")),
+  });
+  revalidatePath(`/w/${slug}/settings`);
 }
 
 export async function liftSuppressionAction(slug: string, entryId: string) {
