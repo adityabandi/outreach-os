@@ -8,6 +8,7 @@ import { processDueDeliveries, ingestReply } from "@/server/delivery";
 import { importProspectsCsv, addSuppression, liftSuppression } from "@/server/prospects";
 import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
+import { createOffer, createIcp, createClaim, retireClaim } from "@/server/library";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
 const sys = new pg.Client("postgres://outreach:outreach@localhost:5433/outreach_os");
@@ -158,6 +159,19 @@ const afterPol = (await q(`select max(version)::int v, (select daily_send_cap fr
 const polAudit = (await q(`select count(*)::int n from audit_events where action='policy.update' and metadata_json->'daily_send_cap'->>'to'='60'`)).rows[0].n;
 check("policy versions forward, admin-only, audited", operatorBlocked && upd.ok && afterPol.v === beforePol + 1 && afterPol.cap === 60 && polAudit === 1, `v${beforePol}->v${afterPol.v}`);
 
+// 13. content library: operators manage offers/ICPs, claims are approver-gated
+const adiFull: WorkspaceContext = { ...adiCtx, roles: ["workspace_admin", "approver"] };
+await createOffer(laraCtx, { name: "E2E Offer", description: "d", pricingText: "$1", callToAction: "try" });
+await createIcp(laraCtx, { name: "E2E ICP", criteriaJson: '{"topics":["test"]}', territories: "us, uk", languages: "en" });
+let claimBlocked = false;
+try { await createClaim(laraCtx, { claimText: "E2E claim", evidenceUrl: "", evidenceNote: "" }); } catch (e: any) { claimBlocked = e.name === "AuthzError"; }
+await createClaim(adiFull, { claimText: "E2E claim", evidenceUrl: "https://e2e.example/proof", evidenceNote: "" });
+const claimRow = (await q(`select id, approved_by from approved_claims where claim_text='E2E claim'`)).rows[0];
+await retireClaim(adiFull, claimRow.id);
+const claimGone = (await q(`select status from approved_claims where id=$1`, [claimRow.id])).rows[0].status;
+check("library: operator creates offer/ICP, claims approver-gated + retired",
+  claimBlocked && claimRow.approved_by === adi.id && claimGone === "retired");
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -182,6 +196,10 @@ await q(`delete from prospect_lists where name like 'E2E Import%'`);
 await q(`delete from suppression_entries where normalized_value='e2e-blocked@example.com'`);
 await q(`delete from audit_events where action='policy.update'`);
 await q(`delete from workspace_policies where workspace_id=$1 and version > 1`, [wsA.id]);
+await q(`delete from audit_events where action in ('offer.create','icp.create','claim.create','claim.retire')`);
+await q(`delete from approved_claims where claim_text='E2E claim'`);
+await q(`delete from offers where name='E2E Offer'`);
+await q(`delete from ideal_customer_profiles where name='E2E ICP'`);
 await q(`delete from outbox_messages where subject in ('Hi Sofia','Hi Arjun') or subject like 'Re: Hi%'`);
 await q(`delete from job_runs where job_type='campaign.schedule'`);
 await sys.end();

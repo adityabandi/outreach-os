@@ -1,7 +1,7 @@
 import { requireWorkspace } from "@/server/auth";
 import { withTenant } from "@/db/client";
 import { Panel, PanelHeader, StatePill, Pill } from "@/ui/primitives";
-import { updatePolicyAction } from "@/server/actions";
+import { updatePolicyAction, createOfferAction, archiveOfferAction, createIcpAction, createClaimAction, retireClaimAction } from "@/server/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +21,8 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
     ]);
     return { ws: ws.rows[0], offers: offers.rows, icps: icps.rows, claims: claims.rows, senders: senders.rows, integrations: integrations.rows, policy: policies.rows[0], members: members.rows };
   });
+  const canOperateWs = ctx.isOrgOwner || ctx.roles.includes("campaign_operator") || ctx.roles.includes("workspace_admin");
+  const canApproveWs = ctx.isOrgOwner || ctx.roles.includes("approver");
   return (
     <div className="space-y-6">
       <div>
@@ -31,14 +33,29 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
         <Panel>
           <PanelHeader title="Offers" />
           <ul className="divide-y divide-line-soft">
-            {data.offers.map((o: any) => (
+            {data.offers.filter((o: any) => o.status === "active").map((o: any) => (
               <li key={o.id} className="px-5 py-3">
-                <div className="text-sm font-medium">{o.name}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-medium">{o.name}</div>
+                  {canOperateWs && <form action={archiveOfferAction.bind(null, slug, o.id)}><button className="btn-ghost !px-2 !py-0.5 text-[11px]">Archive</button></form>}
+                </div>
                 <div className="text-xs text-fg-mute">{o.description}</div>
                 <div className="mt-1 text-xs text-fg-soft">{o.pricing_text} · <span className="text-flare">{o.call_to_action}</span></div>
               </li>
             ))}
           </ul>
+          {canOperateWs && (
+            <form action={createOfferAction.bind(null, slug)} className="space-y-2 border-t border-line-soft px-5 py-4">
+              <div className="label">New offer</div>
+              <input name="name" className="input !py-1.5 text-xs" placeholder="Name" required />
+              <input name="description" className="input !py-1.5 text-xs" placeholder="Description" />
+              <div className="grid grid-cols-2 gap-2">
+                <input name="pricing_text" className="input !py-1.5 text-xs" placeholder="Pricing text" />
+                <input name="call_to_action" className="input !py-1.5 text-xs" placeholder="Call to action" />
+              </div>
+              <button className="btn-ghost !px-2.5 !py-1 text-xs">Add offer</button>
+            </form>
+          )}
         </Panel>
         <Panel>
           <PanelHeader title="Ideal customer profiles" />
@@ -51,6 +68,18 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
               </li>
             ))}
           </ul>
+          {canOperateWs && (
+            <form action={createIcpAction.bind(null, slug)} className="space-y-2 border-t border-line-soft px-5 py-4">
+              <div className="label">New ICP</div>
+              <input name="name" className="input !py-1.5 text-xs" placeholder="Name" required />
+              <input name="criteria_json" className="input !py-1.5 font-mono !text-[11px]" placeholder='Criteria JSON, e.g. {"topics":["ayurveda"]}' />
+              <div className="grid grid-cols-2 gap-2">
+                <input name="territories" className="input !py-1.5 text-xs" placeholder="Territories (US, UK, IN)" />
+                <input name="languages" className="input !py-1.5 text-xs" placeholder="Languages (en, es)" />
+              </div>
+              <button className="btn-ghost !px-2.5 !py-1 text-xs">Add ICP</button>
+            </form>
+          )}
         </Panel>
         <Panel>
           <PanelHeader title="Approved claims" sub="Copy may only use claims from this list." />
@@ -59,12 +88,26 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
               <li key={c.id} className="px-5 py-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm">{c.claim_text}</span>
-                  <Pill tone={c.status === "active" ? "green" : "gray"}>{c.status}</Pill>
+                  <span className="flex items-center gap-2">
+                    <Pill tone={c.status === "active" ? "green" : "gray"}>{c.status}</Pill>
+                    {canApproveWs && c.status === "active" && (
+                      <form action={retireClaimAction.bind(null, slug, c.id)}><button className="btn-ghost !px-2 !py-0.5 text-[11px]">Retire</button></form>
+                    )}
+                  </span>
                 </div>
                 <div className="mt-1 font-mono text-[11px] text-fg-faint">{c.evidence_url}{c.approver ? ` · approved by ${c.approver}` : ""}</div>
               </li>
             ))}
           </ul>
+          {canApproveWs && (
+            <form action={createClaimAction.bind(null, slug)} className="space-y-2 border-t border-line-soft px-5 py-4">
+              <div className="label">New claim - recorded as approved by you</div>
+              <input name="claim_text" className="input !py-1.5 text-xs" placeholder="Claim text" required />
+              <input name="evidence_url" className="input !py-1.5 font-mono !text-[11px]" placeholder="Evidence URL" />
+              <input name="evidence_note" className="input !py-1.5 text-xs" placeholder="Evidence note" />
+              <button className="btn-ghost !px-2.5 !py-1 text-xs">Add claim</button>
+            </form>
+          )}
         </Panel>
         <Panel>
           <PanelHeader title="Senders & integrations" />

@@ -12,6 +12,7 @@ import { importProspectsCsv, setContactVerification, addSuppression, liftSuppres
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
 import { setReplyDraftStatus, updateReplyDraft } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
+import { archiveOffer, createClaim, createIcp, createOffer, retireClaim } from "@/server/library";
 import type { CampaignPayload } from "@/domain/payload";
 
 export async function loginAction(formData: FormData) {
@@ -154,6 +155,45 @@ export async function updatePolicyAction(slug: string, formData: FormData) {
     dailySendCap: Number(formData.get("daily_send_cap")),
     perDomainCap: Number(formData.get("per_domain_cap")),
   });
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function createOfferAction(slug: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await createOffer(ctx, {
+    name: String(formData.get("name") ?? ""), description: String(formData.get("description") ?? ""),
+    pricingText: String(formData.get("pricing_text") ?? ""), callToAction: String(formData.get("call_to_action") ?? ""),
+  });
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function archiveOfferAction(slug: string, offerId: string) {
+  const ctx = await requireWorkspace(slug);
+  await archiveOffer(ctx, offerId);
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function createIcpAction(slug: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await createIcp(ctx, {
+    name: String(formData.get("name") ?? ""), criteriaJson: String(formData.get("criteria_json") ?? ""),
+    territories: String(formData.get("territories") ?? ""), languages: String(formData.get("languages") ?? ""),
+  });
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function createClaimAction(slug: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await createClaim(ctx, {
+    claimText: String(formData.get("claim_text") ?? ""), evidenceUrl: String(formData.get("evidence_url") ?? ""),
+    evidenceNote: String(formData.get("evidence_note") ?? ""),
+  });
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function retireClaimAction(slug: string, claimId: string) {
+  const ctx = await requireWorkspace(slug);
+  await retireClaim(ctx, claimId);
   revalidatePath(`/w/${slug}/settings`);
 }
 
