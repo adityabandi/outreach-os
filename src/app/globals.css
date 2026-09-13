@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  @apply bg-ink-950 text-fg antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "ss01";
+}
+
+::selection { background: rgba(255, 178, 36, 0.25); }
+
+* { scrollbar-width: thin; scrollbar-color: #2C3442 transparent; }
+
+@layer components {
+  .panel {
+    @apply bg-ink-900 border border-line rounded-xl shadow-panel;
+  }
+  .panel-inset {
+    @apply bg-ink-850 border border-line-soft rounded-lg;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium tracking-wide;
+  }
+  .input {
+    @apply w-full rounded-lg border border-line bg-ink-850 px-3 py-2 text-sm text-fg placeholder:text-fg-faint
+      focus:border-flare/60 focus:outline-none focus:ring-2 focus:ring-flare/15 transition;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition
+      disabled:opacity-40 disabled:cursor-not-allowed select-none;
+  }
+  .btn-primary {
+    @apply btn bg-flare text-ink-950 hover:bg-flare-soft active:scale-[0.99];
+  }
+  .btn-ghost {
+    @apply btn border border-line-strong text-fg-soft hover:bg-ink-750 hover:text-fg;
+  }
+  .btn-danger {
+    @apply btn border border-rose/40 text-rose hover:bg-rose/10;
+  }
+  .th {
+    @apply text-left text-[11px] font-medium uppercase tracking-[0.08em] text-fg-faint px-4 py-2.5 border-b border-line;
+  }
+  .td {
+    @apply px-4 py-3 text-sm border-b border-line-soft align-middle;
+  }
+  .label {
+    @apply block text-[11px] font-medium uppercase tracking-[0.08em] text-fg-faint mb-1.5;
+  }
+  .navlink {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-fg-mute hover:text-fg hover:bg-ink-800 transition;
+  }
+  .navlink-active {
+    @apply bg-ink-800 text-fg border border-line;
+  }
+}
