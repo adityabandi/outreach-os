@@ -116,8 +116,9 @@ export async function importCsvAction(slug: string, formData: FormData) {
   const ctx = await requireWorkspace(slug);
   const listName = String(formData.get("list_name") ?? "CSV import");
   const csv = String(formData.get("csv") ?? "");
-  await importProspectsCsv(ctx, listName, csv);
+  const report = await importProspectsCsv(ctx, listName, csv);
   revalidatePath(`/w/${slug}/prospects`);
+  redirect(`/w/${slug}/prospects/import/result?list=${report.listId}`);
 }
 
 export async function verifyContactAction(slug: string, contactPointId: string, status: "verified" | "risky" | "invalid") {

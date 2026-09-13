@@ -1,6 +1,6 @@
 import { requireWorkspace } from "@/server/auth";
 import { withTenant } from "@/db/client";
-import { Panel, PanelHeader, Empty, Pill } from "@/ui/primitives";
+import { Panel, PanelHeader, Empty, Pill, LinkButton } from "@/ui/primitives";
 import { processQueueAction } from "@/server/actions";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,10 @@ export default async function OutboxPage({ params }: { params: Promise<{ slug: s
           <h1 className="text-xl font-semibold tracking-tight">Outbox</h1>
           <p className="mt-1 text-sm text-fg-mute">Dev test mailbox. The first sending adapter writes here instead of a real provider.</p>
         </div>
-        <form action={processQueueAction.bind(null, slug)}><button className="btn-ghost">Process due deliveries</button></form>
+        <div className="flex gap-2">
+          <LinkButton href={`/w/${slug}/outbox/export`}>Export CSV</LinkButton>
+          <form action={processQueueAction.bind(null, slug)}><button className="btn-ghost">Process due deliveries</button></form>
+        </div>
       </div>
       <div className="flex gap-2">
         {rows.jobs.map((j: any, i: number) => <Pill key={i} tone={j.status === "dead" ? "red" : j.status === "succeeded" ? "green" : "gray"}>{j.job_type} · {j.status} · {j.n}</Pill>)}

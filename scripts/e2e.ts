@@ -5,6 +5,7 @@ import {
   createCampaign, saveDraftPayload, requestApproval, decideApproval, launchVersion, controlRun,
 } from "@/server/campaigns";
 import { processDueDeliveries, ingestReply } from "@/server/delivery";
+import { importProspectsCsv } from "@/server/prospects";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
 const sys = new pg.Client("postgres://outreach:outreach@localhost:5433/outreach_os");
@@ -116,6 +117,15 @@ check("paused run sends nothing", before === after);
 const acts = (await q(`select distinct action from audit_events where target_id in ($1::uuid, $2::uuid, $3::uuid) or metadata_json->>'run_id' = $2::text`, [versionId, runId, campaignId])).rows.map((x) => x.action);
 check("audit trail records lifecycle", ["campaign.create","approval.request","approval.approved","campaign.launch","campaign.pause"].every((a) => acts.includes(a)), acts.join(","));
 
+// 10. CSV import: first run imports, re-import merges without duplicating, suppressed + invalid rows reported
+const csv1 = "full_name,email,title,company,domain,country\nE2E Person,e2e.person@example.com,Dev,E2E Co,e2e.example,US\nBad Row,not-an-email,,,,";
+const r1 = await importProspectsCsv(laraCtx, "E2E Import", csv1);
+const csv2 = "full_name,email,title,company,domain,country\nE2E Person,e2e.person@example.com,Dev,E2E Co,e2e.example,US\nNina P,nina@slowapothecary.com,Founder,Slow Apothecary,slowapothecary.com,UK";
+const r2 = await importProspectsCsv(laraCtx, "E2E Import 2", csv2);
+const personCount = (await q(`select count(*)::int n from people where normalized_email='e2e.person@example.com'`)).rows[0].n;
+check("import creates new prospects and reports invalid rows", r1.imported === 1 && r1.skipped === 1, JSON.stringify({ i: r1.imported, s: r1.skipped }));
+check("re-import merges, never duplicates; suppressed emails rejected", r2.merged === 1 && r2.suppressed === 1 && personCount === 1, JSON.stringify({ m: r2.merged, sup: r2.suppressed, people: personCount }));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -130,6 +140,13 @@ await q(`delete from campaign_version_recipients where campaign_version_id in (s
 await q(`delete from campaign_versions where campaign_id=$1`, [cid]);
 await q(`delete from campaigns where id=$1`, [cid]);
 await q(`delete from suppression_entries where normalized_value='sofia@herbaldaily.io'`);
+await q(`delete from prospect_list_members where prospect_list_id in (select id from prospect_lists where name like 'E2E Import%')`);
+await q(`delete from evidence_items where subject_id in (select id from people where normalized_email='e2e.person@example.com')`);
+await q(`delete from contact_points where normalized_value='e2e.person@example.com'`);
+await q(`delete from people where normalized_email='e2e.person@example.com'`);
+await q(`delete from companies where normalized_domain='e2e.example'`);
+await q(`delete from audit_events where target_id in (select id from prospect_lists where name like 'E2E Import%')`);
+await q(`delete from prospect_lists where name like 'E2E Import%'`);
 await q(`delete from outbox_messages where subject in ('Hi Sofia','Hi Arjun') or subject like 'Re: Hi%'`);
 await q(`delete from job_runs where job_type='campaign.schedule'`);
 await sys.end();

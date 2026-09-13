@@ -8,6 +8,7 @@ const ws = (await db.query(`select id from workspaces where slug='ayurveda-nest'
 const camp = (await db.query(`select id from campaigns where name='Creator Wave 1'`)).rows[0].id;
 const approval = (await db.query(`select id from approval_requests where status='pending' limit 1`)).rows[0].id;
 const person = (await db.query(`select id from people where normalized_email='maya@wildrootwellness.com'`)).rows[0].id;
+const importList = (await db.query(`select id from prospect_lists where import_report_json is not null order by created_at desc limit 1`)).rows[0]?.id;
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
@@ -28,6 +29,7 @@ const shots: [string, string][] = [
   ["suppressions", `/w/ayurveda-nest/suppressions`],
   ["audit", `/w/ayurveda-nest/audit`],
   ["outbox", `/w/ayurveda-nest/outbox`],
+  ...(importList ? [["import-result", `/w/ayurveda-nest/prospects/import/result?list=${importList}`] as [string, string]] : []),
   ["settings", `/w/ayurveda-nest/settings`],
 ];
 for (const [name, path] of shots) {

@@ -3,10 +3,16 @@ import { createHash } from "node:crypto";
 import { withTenant } from "@/db/client";
 import { audit } from "@/domain/audit";
 import { canOperate, type WorkspaceContext } from "@/domain/tenancy";
-import { normalizeEmail } from "@/domain/compliance";
+import { matchesSuppression, normalizeEmail } from "@/domain/compliance";
 
-/** CSV import: header row required: full_name,email,title,company,domain,country */
-export async function importProspectsCsv(ctx: WorkspaceContext, listName: string, csv: string) {
+export type ImportOutcome = "imported" | "merged" | "skipped" | "suppressed";
+export interface ImportRowReport { email: string; name: string; outcome: ImportOutcome; reason?: string }
+export interface ImportReport { listId: string; imported: number; merged: number; skipped: number; suppressed: number; rows: ImportRowReport[] }
+
+/** CSV import: header row required: full_name,email,title,company,domain,country.
+ *  Existing people are merged (missing fields filled, added to the list), never duplicated;
+ *  every row's outcome is reported and stored on the list. */
+export async function importProspectsCsv(ctx: WorkspaceContext, listName: string, csv: string): Promise<ImportReport> {
   canOperate(ctx);
   return withTenant(ctx.workspaceId, async (db) => {
     const list = await db.query(
@@ -17,14 +23,24 @@ export async function importProspectsCsv(ctx: WorkspaceContext, listName: string
     const lines = csv.split(/\r?\n/).filter((l) => l.trim());
     const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
     const col = (name: string) => header.indexOf(name);
-    let imported = 0, skipped = 0;
+    const suppr = await db.query(
+      `select scope, normalized_value, expires_at from suppression_entries where expires_at is null or expires_at > now()`);
+    const suppressions = suppr.rows as { scope: string; normalized_value: string; expires_at: string | null }[];
+    const rows: ImportRowReport[] = [];
+    let imported = 0, merged = 0, skipped = 0, suppressed = 0;
     const seenEmails = new Set<string>();
     for (const line of lines.slice(1)) {
       const cells = line.split(",").map((c) => c.trim());
       const email = normalizeEmail(cells[col("email")] ?? "");
       const name = cells[col("full_name")] ?? "";
-      if (!email || !email.includes("@") || !name || seenEmails.has(email)) { skipped++; continue; }
+      const fail = (reason: string) => { skipped++; rows.push({ email, name, outcome: "skipped", reason }); };
+      if (!email || !email.includes("@")) { fail("invalid email"); continue; }
+      if (!name) { fail("missing name"); continue; }
+      if (seenEmails.has(email)) { fail("duplicate in file"); continue; }
       seenEmails.add(email);
+      if (matchesSuppression(suppressions, email).suppressed) {
+        suppressed++; rows.push({ email, name, outcome: "suppressed", reason: "on suppression list" }); continue;
+      }
       const domain = cells[col("domain")] || email.split("@")[1];
       const companyName = cells[col("company")] ?? "";
       let companyId: string | null = null;
@@ -42,8 +58,19 @@ export async function importProspectsCsv(ctx: WorkspaceContext, listName: string
          values ($1,$2,$3,$4,$5,$6,$7)
          on conflict (workspace_id, normalized_email) do nothing returning id`,
         [ctx.organizationId, ctx.workspaceId, companyId, name, cells[col("title")] || null, null, email]);
-      if (p.rowCount === 0) { skipped++; continue; }
-      const personId = p.rows[0].id as string;
+      let personId: string;
+      let outcome: ImportOutcome = "imported";
+      if (p.rowCount === 0) {
+        // existing person: merge - fill only empty fields, never overwrite
+        const ex = await db.query(
+          `update people set company_id = coalesce(company_id, $3), title = coalesce(title, $4)
+            where workspace_id = $1 and normalized_email = $2 returning id`,
+          [ctx.workspaceId, email, companyId, cells[col("title")] || null]);
+        personId = ex.rows[0].id as string;
+        outcome = "merged";
+      } else {
+        personId = p.rows[0].id as string;
+      }
       await db.query(
         `insert into contact_points (organization_id, workspace_id, person_id, type, normalized_value, verification_status)
          values ($1,$2,$3,'email',$4,'unverified') on conflict do nothing`,
@@ -59,15 +86,18 @@ export async function importProspectsCsv(ctx: WorkspaceContext, listName: string
       await db.query(
         `insert into prospect_list_members (prospect_list_id, person_id) values ($1,$2) on conflict do nothing`,
         [listId, personId]);
-      imported++;
+      if (outcome === "imported") imported++; else merged++;
+      rows.push({ email, name, outcome });
     }
+    const report: ImportReport = { listId, imported, merged, skipped, suppressed, rows };
+    await db.query(`update prospect_lists set import_report_json = $2 where id = $1`, [listId, JSON.stringify(report)]);
     await audit(db, {
       organizationId: ctx.organizationId, workspaceId: ctx.workspaceId,
       actorType: "user", actorId: ctx.actor.userId,
       action: "prospects.import_csv", targetType: "prospect_list", targetId: listId,
-      metadata: { list: listName, imported, skipped },
+      metadata: { list: listName, imported, merged, skipped, suppressed },
     });
-    return { listId, imported, skipped };
+    return report;
   });
 }
 
