@@ -17,6 +17,26 @@ async function tick() {
       try {
         if (job.job_type === "campaign.schedule" && job.workspace_id) {
           await processDueDeliveries(job.workspace_id);
+        } else if (job.job_type === "webhook.process" && job.workspace_id) {
+          const evt = await db.query(
+            `select payload_json from provider_webhook_events
+              where provider = $1 and external_event_id = $2`,
+            [job.payload_json.provider, job.payload_json.externalEventId]);
+          const p = evt.rows[0]?.payload_json as any;
+          if (p?.type === "reply") {
+            const { ingestReply } = await import("@/server/delivery");
+            await ingestReply(job.workspace_id, {
+              providerMessageId: String(p.message_id ?? p.id),
+              threadRef: p.thread_ref ?? null,
+              from: String(p.from ?? ""),
+              subject: String(p.subject ?? ""),
+              body: String(p.body ?? ""),
+            });
+          }
+          await db.query(
+            `update provider_webhook_events set processing_status = 'processed'
+              where provider = $1 and external_event_id = $2`,
+            [job.payload_json.provider, job.payload_json.externalEventId]);
         }
         await db.query(`update job_runs set status = 'succeeded', completed_at = now() where id = $1`, [job.id]);
       } catch (e) {
