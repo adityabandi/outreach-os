@@ -30,6 +30,7 @@ const shots: [string, string][] = [
   ["suppressions", `/w/ayurveda-nest/suppressions`],
   ["suppressions-check", `/w/ayurveda-nest/suppressions?check=nina@slowapothecary.com`],
   ["audit", `/w/ayurveda-nest/audit`],
+  ["audit-filtered", `/w/ayurveda-nest/audit?actor=user&action=approval`],
   ["outbox", `/w/ayurveda-nest/outbox`],
   ...(importList ? [["import-result", `/w/ayurveda-nest/prospects/import/result?list=${importList}`] as [string, string]] : []),
   ["settings", `/w/ayurveda-nest/settings`],
