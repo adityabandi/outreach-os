@@ -120,18 +120,37 @@ export async function setContactVerification(
   });
 }
 
-export async function addSuppression(ctx: WorkspaceContext, value: string, scope: string, reason: string) {
+export async function addSuppression(ctx: WorkspaceContext, value: string, scope: string, reason: string, expiresAt?: string | null) {
   canOperate(ctx);
   return withTenant(ctx.workspaceId, async (db) => {
     await db.query(
-      `insert into suppression_entries (organization_id, workspace_id, scope, normalized_value, reason, source)
-       values ($1,$2,$3,$4,$5,'manual') on conflict do nothing`,
-      [ctx.organizationId, ctx.workspaceId, scope, value.trim().toLowerCase(), reason]);
+      `insert into suppression_entries (organization_id, workspace_id, scope, normalized_value, reason, source, expires_at)
+       values ($1,$2,$3,$4,$5,'manual',$6) on conflict do nothing`,
+      [ctx.organizationId, ctx.workspaceId, scope, value.trim().toLowerCase(), reason, expiresAt || null]);
     await audit(db, {
       organizationId: ctx.organizationId, workspaceId: ctx.workspaceId,
       actorType: "user", actorId: ctx.actor.userId,
       action: "suppression.add", targetType: "suppression_entry",
-      metadata: { scope, value: value.trim().toLowerCase(), reason },
+      metadata: { scope, value: value.trim().toLowerCase(), reason, expires_at: expiresAt || null },
+    });
+    return { ok: true };
+  });
+}
+
+/** Lift a suppression by expiring it now. The entry stays for the audit trail. */
+export async function liftSuppression(ctx: WorkspaceContext, entryId: string) {
+  canOperate(ctx);
+  return withTenant(ctx.workspaceId, async (db) => {
+    const r = await db.query(
+      `update suppression_entries set expires_at = now()
+        where id = $1 and workspace_id = $2 and (expires_at is null or expires_at > now())
+        returning normalized_value`, [entryId, ctx.workspaceId]);
+    if (r.rowCount === 0) return { ok: false };
+    await audit(db, {
+      organizationId: ctx.organizationId, workspaceId: ctx.workspaceId,
+      actorType: "user", actorId: ctx.actor.userId,
+      action: "suppression.lift", targetType: "suppression_entry", targetId: entryId,
+      metadata: { value: r.rows[0].normalized_value },
     });
     return { ok: true };
   });

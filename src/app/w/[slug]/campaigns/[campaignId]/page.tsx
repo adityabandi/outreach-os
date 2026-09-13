@@ -29,7 +29,14 @@ export default async function CampaignDetail({ params }: { params: Promise<{ slu
          left join lateral (select disposition, score from qualification_runs qr where qr.person_id = p.id order by created_at desc limit 1) q on true
         order by p.full_name`);
     const runs = await db.query(
-      `select cr.*, cv.version_number from campaign_runs cr join campaign_versions cv on cv.id = cr.campaign_version_id
+      `select cr.*, cv.version_number,
+         (select count(*)::int from message_deliveries md where md.campaign_run_id = cr.id) as total,
+         (select count(*)::int from message_deliveries md where md.campaign_run_id = cr.id and md.status = 'sent') as sent,
+         (select count(*)::int from message_deliveries md where md.campaign_run_id = cr.id and md.status = 'scheduled') as scheduled,
+         (select count(*)::int from message_deliveries md where md.campaign_run_id = cr.id and md.status in ('suppressed','skipped')) as stopped,
+         (select count(*)::int from message_deliveries md where md.campaign_run_id = cr.id and md.status = 'failed') as failed,
+         (select min(md.scheduled_at) from message_deliveries md where md.campaign_run_id = cr.id and md.status = 'scheduled') as next_send
+        from campaign_runs cr join campaign_versions cv on cv.id = cr.campaign_version_id
         where cv.campaign_id = $1 order by cr.launched_at desc nulls last`, [campaignId]);
     const deliveries = await db.query(
       `select md.status, count(*)::int as n from message_deliveries md
@@ -82,13 +89,29 @@ export default async function CampaignDetail({ params }: { params: Promise<{ slu
         <Panel>
           <PanelHeader title="Runs" sub="Launch, pause, resume and stop. Pause blocks every not-yet-sent message." />
           <table className="w-full">
-            <thead><tr><th className="th">Run</th><th className="th">Version</th><th className="th">Status</th><th className="th">Launched</th><th className="th text-right">Actions</th></tr></thead>
+            <thead><tr><th className="th">Run</th><th className="th">Version</th><th className="th">Status</th><th className="th">Progress</th><th className="th">Next send</th><th className="th">Launched</th><th className="th text-right">Actions</th></tr></thead>
             <tbody>
               {data.runs.map((r: any) => (
                 <tr key={r.id}>
                   <td className="td font-mono text-xs text-fg-mute">{r.id.slice(0, 8)}</td>
                   <td className="td">v{r.version_number}</td>
                   <td className="td"><StatePill state={r.status} /></td>
+                  <td className="td min-w-[140px]">
+                    {r.total > 0 ? (
+                      <div>
+                        <div className="h-1.5 w-32 overflow-hidden rounded-full bg-ink-750">
+                          <div className="flex h-full">
+                            <span className="bg-mint" style={{ width: `${(r.sent / r.total) * 100}%` }} />
+                            <span className="bg-sky/60" style={{ width: `${(r.scheduled / r.total) * 100}%` }} />
+                            <span className="bg-flare/70" style={{ width: `${(r.stopped / r.total) * 100}%` }} />
+                            <span className="bg-rose" style={{ width: `${(r.failed / r.total) * 100}%` }} />
+                          </div>
+                        </div>
+                        <div className="mt-1 text-[10px] text-fg-faint">{r.sent}/{r.total} sent{r.stopped > 0 ? ` · ${r.stopped} stopped` : ""}{r.failed > 0 ? ` · ${r.failed} failed` : ""}</div>
+                      </div>
+                    ) : <span className="text-xs text-fg-faint">-</span>}
+                  </td>
+                  <td className="td text-fg-mute text-xs">{r.next_send ? new Date(r.next_send).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                   <td className="td text-fg-mute text-xs">{r.launched_at ? new Date(r.launched_at).toLocaleString("en-GB") : "-"}</td>
                   <td className="td text-right">
                     <span className="inline-flex gap-2">

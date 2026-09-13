@@ -5,7 +5,7 @@ import {
   createCampaign, saveDraftPayload, requestApproval, decideApproval, launchVersion, controlRun,
 } from "@/server/campaigns";
 import { processDueDeliveries, ingestReply } from "@/server/delivery";
-import { importProspectsCsv } from "@/server/prospects";
+import { importProspectsCsv, addSuppression, liftSuppression } from "@/server/prospects";
 import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
@@ -139,6 +139,14 @@ const personCount = (await q(`select count(*)::int n from people where normalize
 check("import creates new prospects and reports invalid rows", r1.imported === 1 && r1.skipped === 1, JSON.stringify({ i: r1.imported, s: r1.skipped }));
 check("re-import merges, never duplicates; suppressed emails rejected", r2.merged === 1 && r2.suppressed === 1 && personCount === 1, JSON.stringify({ m: r2.merged, sup: r2.suppressed, people: personCount }));
 
+// 11. suppression lifecycle: add with expiry, lift expires it, both audited
+await addSuppression(laraCtx, "e2e-blocked@example.com", "workspace", "e2e test");
+const blockedRow = (await q(`select id from suppression_entries where normalized_value='e2e-blocked@example.com' and (expires_at is null or expires_at > now())`)).rows[0];
+await liftSuppression(laraCtx, blockedRow.id);
+const stillActive = (await q(`select count(*)::int n from suppression_entries where normalized_value='e2e-blocked@example.com' and (expires_at is null or expires_at > now())`)).rows[0].n;
+const supAudit = (await q(`select distinct action from audit_events where action in ('suppression.add','suppression.lift') and metadata_json->>'value'='e2e-blocked@example.com'`)).rows.map((x) => x.action);
+check("suppression add + lift lifecycle audited", stillActive === 0 && supAudit.includes("suppression.add") && supAudit.includes("suppression.lift"), supAudit.join(","));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -160,6 +168,7 @@ await q(`delete from people where normalized_email='e2e.person@example.com'`);
 await q(`delete from companies where normalized_domain='e2e.example'`);
 await q(`delete from audit_events where target_id in (select id from prospect_lists where name like 'E2E Import%')`);
 await q(`delete from prospect_lists where name like 'E2E Import%'`);
+await q(`delete from suppression_entries where normalized_value='e2e-blocked@example.com'`);
 await q(`delete from outbox_messages where subject in ('Hi Sofia','Hi Arjun') or subject like 'Re: Hi%'`);
 await q(`delete from job_runs where job_type='campaign.schedule'`);
 await sys.end();

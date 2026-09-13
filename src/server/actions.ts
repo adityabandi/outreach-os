@@ -8,7 +8,7 @@ import {
   createCampaign, saveDraftPayload, requestApproval, decideApproval,
   launchVersion, controlRun, setKillSwitch,
 } from "@/server/campaigns";
-import { importProspectsCsv, setContactVerification, addSuppression } from "@/server/prospects";
+import { importProspectsCsv, setContactVerification, addSuppression, liftSuppression } from "@/server/prospects";
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
 import { setReplyDraftStatus, updateReplyDraft } from "@/server/replies";
 import type { CampaignPayload } from "@/domain/payload";
@@ -142,7 +142,14 @@ export async function verifyContactAction(slug: string, contactPointId: string, 
 
 export async function addSuppressionAction(slug: string, formData: FormData) {
   const ctx = await requireWorkspace(slug);
-  await addSuppression(ctx, String(formData.get("value") ?? ""), String(formData.get("scope") ?? "workspace"), String(formData.get("reason") ?? "manual"));
+  const expires = String(formData.get("expires_at") ?? "");
+  await addSuppression(ctx, String(formData.get("value") ?? ""), String(formData.get("scope") ?? "workspace"), String(formData.get("reason") ?? "manual"), expires || null);
+  revalidatePath(`/w/${slug}/suppressions`);
+}
+
+export async function liftSuppressionAction(slug: string, entryId: string) {
+  const ctx = await requireWorkspace(slug);
+  await liftSuppression(ctx, entryId);
   revalidatePath(`/w/${slug}/suppressions`);
 }
 
