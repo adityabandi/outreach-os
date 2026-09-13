@@ -10,6 +10,7 @@ import {
 } from "@/server/campaigns";
 import { importProspectsCsv, setContactVerification, addSuppression } from "@/server/prospects";
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
+import { setReplyDraftStatus, updateReplyDraft } from "@/server/replies";
 import type { CampaignPayload } from "@/domain/payload";
 
 export async function loginAction(formData: FormData) {
@@ -119,6 +120,18 @@ export async function importCsvAction(slug: string, formData: FormData) {
   const report = await importProspectsCsv(ctx, listName, csv);
   revalidatePath(`/w/${slug}/prospects`);
   redirect(`/w/${slug}/prospects/import/result?list=${report.listId}`);
+}
+
+export async function editReplyDraftAction(slug: string, draftId: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await updateReplyDraft(ctx, draftId, String(formData.get("body") ?? ""));
+  revalidatePath(`/w/${slug}/replies`);
+}
+
+export async function replyDraftStatusAction(slug: string, draftId: string, status: "sent" | "discarded") {
+  const ctx = await requireWorkspace(slug);
+  await setReplyDraftStatus(ctx, draftId, status);
+  revalidatePath(`/w/${slug}/replies`);
 }
 
 export async function verifyContactAction(slug: string, contactPointId: string, status: "verified" | "risky" | "invalid") {

@@ -21,7 +21,13 @@ export default async function ProspectDetail({ params }: { params: Promise<{ slu
       `select md.*, cv.version_number, c.name as campaign_name from message_deliveries md
          join campaign_versions cv on cv.id = md.campaign_version_id join campaigns c on c.id = cv.campaign_id
         where md.person_id = $1 order by md.scheduled_at desc`, [personId]);
-    return { person: p.rows[0], contacts: contacts.rows, evidence: evidence.rows, quals: quals.rows, deliveries: deliveries.rows };
+    const replies = await db.query(
+      `select im.*, rc.category from inbound_messages im
+         left join reply_classifications rc on rc.inbound_message_id = im.id
+        where im.person_id = $1 order by im.received_at desc`, [personId]);
+    const conversions = await db.query(
+      `select * from conversions where person_id = $1 order by occurred_at desc`, [personId]);
+    return { person: p.rows[0], contacts: contacts.rows, evidence: evidence.rows, quals: quals.rows, deliveries: deliveries.rows, replies: replies.rows, conversions: conversions.rows };
   });
   if (!data) notFound();
   const { person } = data;
@@ -87,24 +93,58 @@ export default async function ProspectDetail({ params }: { params: Promise<{ slu
           ))}
         </ul>
       </Panel>
-      {data.deliveries.length > 0 && (
-        <Panel>
-          <PanelHeader title="Message history" />
-          <table className="w-full">
-            <thead><tr><th className="th">Campaign</th><th className="th">Step</th><th className="th">Status</th><th className="th">Sent</th></tr></thead>
-            <tbody>
-              {data.deliveries.map((d: any) => (
-                <tr key={d.id}>
-                  <td className="td">{d.campaign_name} <span className="text-fg-faint text-xs">v{d.version_number}</span></td>
-                  <td className="td">{d.step_number}</td>
-                  <td className="td"><StatePill state={d.status} /></td>
-                  <td className="td text-xs text-fg-mute">{d.sent_at ? new Date(d.sent_at).toLocaleString("en-GB") : "-"}</td>
-                </tr>
+      {(() => {
+        type Ev = { at: string; kind: string; title: string; detail?: string; tone: string };
+        const events: Ev[] = [
+          ...data.deliveries.map((d: any): Ev => ({
+            at: d.sent_at ?? d.scheduled_at, kind: "delivery",
+            title: `${d.campaign_name} v${d.version_number} · step ${d.step_number}`,
+            detail: d.status,
+            tone: d.status === "sent" ? "#6AA8FF" : d.status === "scheduled" ? "#8B8F9E" : d.status === "suppressed" || d.status === "skipped" ? "#FFB224" : "#FF6B6B",
+          })),
+          ...data.replies.map((r: any): Ev => ({
+            at: r.received_at, kind: "reply",
+            title: `Replied${r.category ? ` · classified ${r.category}` : ""}`,
+            detail: r.subject ?? undefined,
+            tone: r.category === "unsubscribe" ? "#FF6B6B" : r.category === "interested" ? "#3ECF9A" : "#B79CFF",
+          })),
+          ...data.conversions.map((c: any): Ev => ({
+            at: c.occurred_at, kind: "conversion",
+            title: `Conversion: ${c.event_type}${c.value_amount ? ` · $${c.value_amount}` : ""}`,
+            tone: "#3ECF9A",
+          })),
+          ...data.quals.map((qn: any): Ev => ({
+            at: qn.created_at, kind: "qualification",
+            title: `Qualified ${qn.disposition} · score ${Number(qn.score).toFixed(2)}`,
+            tone: "#8B8F9E",
+          })),
+          ...data.evidence.map((e: any): Ev => ({
+            at: e.observed_at, kind: "evidence",
+            title: `Evidence from ${e.source_type}`, detail: e.excerpt?.slice(0, 120),
+            tone: "#8B8F9E",
+          })),
+        ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+        return (
+          <Panel>
+            <PanelHeader title="Timeline" sub="Everything that happened with this person, newest first." />
+            <ol className="relative px-5 py-4">
+              {events.map((ev, i) => (
+                <li key={i} className="relative flex gap-4 pb-5 last:pb-0">
+                  {i < events.length - 1 && <span className="absolute left-[5px] top-4 h-full w-px bg-line-soft" />}
+                  <span className="mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full border-2 border-ink-850" style={{ background: ev.tone }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <div className="text-sm font-medium">{ev.title}</div>
+                      <div className="text-[11px] text-fg-faint">{new Date(ev.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
+                    </div>
+                    {ev.detail && <div className="mt-0.5 truncate text-xs text-fg-mute">{ev.detail}</div>}
+                  </div>
+                </li>
               ))}
-            </tbody>
-          </table>
-        </Panel>
-      )}
+            </ol>
+          </Panel>
+        );
+      })()}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { requireWorkspace } from "@/server/auth";
 import { withTenant } from "@/db/client";
 import { Panel, PanelHeader, StatePill, Pill, Empty } from "@/ui/primitives";
-import { simulateReplyAction } from "@/server/actions";
+import { simulateReplyAction, editReplyDraftAction, replyDraftStatusAction } from "@/server/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -50,11 +50,23 @@ export default async function RepliesPage({ params }: { params: Promise<{ slug: 
                   <p className="mt-2 text-sm text-fg-soft">{r.body}</p>
                   {r.draft_body && (
                     <div className="panel-inset mt-3 p-3">
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className="text-[11px] font-medium uppercase tracking-wider text-fg-faint">Draft reply - not sent</span>
-                        <Pill tone="gray">{r.draft_status}</Pill>
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-[11px] font-medium uppercase tracking-wider text-fg-faint">Draft reply - never auto-sent</span>
+                        <Pill tone={r.draft_status === "sent" ? "green" : r.draft_status === "discarded" ? "gray" : "amber"}>{r.draft_status === "sent" ? "sent externally" : r.draft_status}</Pill>
                       </div>
-                      <p className="text-[13px] text-fg-soft">{r.draft_body}</p>
+                      {r.draft_status === "draft" ? (
+                        <form action={editReplyDraftAction.bind(null, slug, r.draft_id)} className="space-y-2">
+                          <textarea name="body" rows={4} defaultValue={r.draft_body} className="input !text-[13px] leading-relaxed" />
+                          <div className="flex items-center gap-2">
+                            <button className="btn-ghost !px-2.5 !py-1 text-xs">Save draft</button>
+                            <button formAction={replyDraftStatusAction.bind(null, slug, r.draft_id, "sent")} className="btn-ghost !px-2.5 !py-1 text-xs text-mint">Mark sent externally</button>
+                            <button formAction={replyDraftStatusAction.bind(null, slug, r.draft_id, "discarded")} className="btn-ghost !px-2.5 !py-1 text-xs text-rose">Discard</button>
+                            <span className="ml-auto text-[10px] text-fg-faint">Send from your mail client, then mark it here.</span>
+                          </div>
+                        </form>
+                      ) : (
+                        <p className="text-[13px] text-fg-soft">{r.draft_body}</p>
+                      )}
                     </div>
                   )}
                 </div>

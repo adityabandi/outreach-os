@@ -6,6 +6,7 @@ import {
 } from "@/server/campaigns";
 import { processDueDeliveries, ingestReply } from "@/server/delivery";
 import { importProspectsCsv } from "@/server/prospects";
+import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
 const sys = new pg.Client("postgres://outreach:outreach@localhost:5433/outreach_os");
@@ -116,6 +117,18 @@ check("paused run sends nothing", before === after);
 // 9. audit trail covers the lifecycle
 const acts = (await q(`select distinct action from audit_events where target_id in ($1::uuid, $2::uuid, $3::uuid) or metadata_json->>'run_id' = $2::text`, [versionId, runId, campaignId])).rows.map((x) => x.action);
 check("audit trail records lifecycle", ["campaign.create","approval.request","approval.approved","campaign.launch","campaign.pause"].every((a) => acts.includes(a)), acts.join(","));
+
+// 9b. reply draft review: edit, finalize, immutability after finalize
+const unsubIn = await ingestReply(wsA.id, { providerMessageId: `e2e_draft_${Date.now()}`, from: "arjun@vedicliving.in", subject: "Re: Hi", body: "Interesting, what are the terms?" });
+const draftRow = (await q(`select id, status from reply_drafts where inbound_message_id=$1`, [unsubIn.inboundId])).rows[0];
+await updateReplyDraft(laraCtx, draftRow.id, "Edited by a human: terms are $5 monthly, $30 annual.");
+await setReplyDraftStatus(laraCtx, draftRow.id, "sent");
+let editAfterFinal = false;
+try { await updateReplyDraft(laraCtx, draftRow.id, "tamper"); } catch (e: any) { editAfterFinal = e.code === "conflict"; }
+const draftAudit = (await q(`select distinct action from audit_events where target_id=$1`, [draftRow.id])).rows.map((x) => x.action);
+check("reply draft editable then immutable after finalize, audited",
+  editAfterFinal && draftAudit.includes("reply_draft.edited") && draftAudit.includes("reply_draft.marked_sent_externally"),
+  draftAudit.join(","));
 
 // 10. CSV import: first run imports, re-import merges without duplicating, suppressed + invalid rows reported
 const csv1 = "full_name,email,title,company,domain,country\nE2E Person,e2e.person@example.com,Dev,E2E Co,e2e.example,US\nBad Row,not-an-email,,,,";
