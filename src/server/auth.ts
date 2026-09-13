@@ -62,15 +62,14 @@ export async function requireWorkspace(slug: string): Promise<WorkspaceContext> 
   const actor = await currentActor();
   if (!actor) redirect("/login");
   const ctx = await withSystem(async (db) => {
+    // membership rows are RLS-protected; my_memberships() is the security-definer identity path
     const r = await db.query(
       `select w.id as workspace_id, w.organization_id, w.slug,
-              coalesce(array_agg(wm.role) filter (where wm.role is not null), '{}') as roles,
+              coalesce((select array_agg(m.role) from my_memberships($2) m where m.workspace_id = w.id), '{}') as roles,
               exists(select 1 from organization_memberships om
                       where om.organization_id = w.organization_id and om.user_id = $2) as is_org_owner
          from workspaces w
-         left join workspace_memberships wm on wm.workspace_id = w.id and wm.user_id = $2
-        where w.slug = $1
-        group by w.id`,
+        where w.slug = $1`,
       [slug, actor.userId],
     );
     if (r.rowCount === 0) return null; // no existence leak
@@ -94,9 +93,9 @@ export async function listAccessibleWorkspaces(actor: Actor) {
     const r = await db.query(
       `select distinct w.id, w.name, w.slug, w.default_timezone, w.kill_switch
          from workspaces w
-         left join workspace_memberships wm on wm.workspace_id = w.id and wm.user_id = $1
-         left join organization_memberships om on om.organization_id = w.organization_id and om.user_id = $1
-        where wm.user_id is not null or om.user_id is not null
+        where exists(select 1 from my_memberships($1) m where m.workspace_id = w.id)
+           or exists(select 1 from organization_memberships om
+                      where om.organization_id = w.organization_id and om.user_id = $1)
         order by w.name`,
       [actor.userId],
     );
