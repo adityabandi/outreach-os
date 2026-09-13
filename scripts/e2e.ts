@@ -51,7 +51,7 @@ await saveDraftPayload(laraCtx, versionId, {
     { step_number: 2, delay_minutes: 60, subject_template: "Re: Hi {{first_name}}", body_template: "Follow-up for {{first_name}}.", stop_conditions: ["reply","bounce","unsubscribe","conversion"] },
   ],
   personalization_rules: { allowed_variables: ["first_name","full_name","company","title","sender_name"] },
-  delivery: { timezone: "Europe/Madrid", send_window: { start_hour: 0, end_hour: 23 }, daily_workspace_cap: 50, sender_daily_cap: 25, per_domain_cap: 5 },
+  delivery: { timezone: "Europe/Madrid", send_window: { start_hour: 0, end_hour: 24 }, daily_workspace_cap: 50, sender_daily_cap: 25, per_domain_cap: 5 },
   follow_up: { enabled: true }, reply_policy: { auto_send: false }, suppression_policy: { check_before_send: true },
 });
 // recipients manifest table (normally set by the builder save path)
