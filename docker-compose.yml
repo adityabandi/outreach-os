@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: outreach
+      POSTGRES_PASSWORD: outreach
+      POSTGRES_DB: outreach_os
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outreach -d outreach_os"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build: .
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgres://outreach:outreach@db:5432/outreach_os
+    command: ["node", "--import", "tsx", "src/db/migrate.ts"]
+  seed:
+    build: .
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    environment:
+      DATABASE_URL: postgres://outreach:outreach@db:5432/outreach_os
+    command: ["node", "--import", "tsx", "src/db/seed.ts"]
+  app:
+    build: .
+    depends_on: { seed: { condition: service_completed_successfully } }
+    environment:
+      DATABASE_URL: postgres://outreach_app:outreach_app@db:5432/outreach_os
+      WEBHOOK_SECRET_DEV: dev-webhook-secret
+    ports: ["3100:3100"]
+  worker:
+    build: .
+    depends_on: { seed: { condition: service_completed_successfully } }
+    environment:
+      DATABASE_URL: postgres://outreach_app:outreach_app@db:5432/outreach_os
+    command: ["pnpm", "worker"]
+volumes:
+  pgdata:

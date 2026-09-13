@@ -25,6 +25,16 @@ pnpm worker            # queue worker (separate process)
 
 Sign in at `/login` with a seeded account (Aditya = org owner/approver, Lara = operator). Dev sign-in is session-cookie based; production swaps in managed OIDC behind the same `currentActor` interface.
 
+### Docker
+
+One image serves both processes; compose brings up Postgres, migrations, seed, app and worker:
+
+```bash
+docker compose up --build    # app on http://localhost:3100
+```
+
+`docker-compose.yml` runs Postgres 18, applies `migrations/` (which also create the non-superuser `outreach_app` role), seeds the demo org, then starts the app and worker. Point `DATABASE_URL` at any external Postgres 16+ and run `migrations/` on deploy for real environments.
+
 ```bash
 pnpm test              # unit: state machine, canonical hashing, suppression/caps/windows
 node --conditions=react-server --import tsx scripts/e2e.ts   # live e2e: approval, RLS, launch, send, pause
