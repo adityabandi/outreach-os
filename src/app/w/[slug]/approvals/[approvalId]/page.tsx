@@ -5,6 +5,7 @@ import { Panel, PanelHeader, StatePill, Pill, HashChip } from "@/ui/primitives";
 import { decideApprovalAction } from "@/server/actions";
 import { validateReadiness, renderTemplate } from "@/server/campaigns";
 import type { CampaignPayload } from "@/domain/payload";
+import { diffVersions, type DiffRecipient } from "@/domain/diff";
 
 export const dynamic = "force-dynamic";
 
@@ -30,10 +31,35 @@ export default async function ApprovalReview({ params }: { params: Promise<{ slu
          left join companies co on co.id = p.company_id
         where cvr.campaign_version_id = $1 order by p.full_name`, [req.resource_id]);
     const readiness = await validateReadiness(db, ctx, req.resource_id);
-    return { req, version: v.rows[0], payload, sender: sender.rows[0], recipients: recipients.rows, readiness };
+    let prev: { version: Record<string, any>; payload: CampaignPayload; recipients: DiffRecipient[] } | null = null;
+    if (v.rows[0].version_number > 1) {
+      const pv = await db.query(
+        `select * from campaign_versions where campaign_id = $1 and version_number < $2 order by version_number desc limit 1`,
+        [v.rows[0].campaign_id, v.rows[0].version_number]);
+      if (pv.rows[0]) {
+        const pr = await db.query(
+          `select p.full_name as name, cp.normalized_value as email
+             from campaign_version_recipients cvr join people p on p.id = cvr.person_id
+             join contact_points cp on cp.id = cvr.contact_point_id where cvr.campaign_version_id = $1`, [pv.rows[0].id]);
+        prev = { version: pv.rows[0], payload: pv.rows[0].payload_json as CampaignPayload, recipients: pr.rows as DiffRecipient[] };
+      }
+    }
+    const senderIds = [...new Set([payload.sender_identity_id, prev?.payload.sender_identity_id].filter(Boolean))] as string[];
+    const senders = await db.query(`select id, display_name, address from sender_identities where id = any($1::uuid[])`, [senderIds]);
+    return { req, version: v.rows[0], payload, sender: sender.rows[0], recipients: recipients.rows, readiness, prev, senders: senders.rows };
   });
   if (!data) notFound();
-  const { req, version, payload, sender, recipients, readiness } = data;
+  const { req, version, payload, sender, recipients, readiness, prev, senders } = data;
+  const senderLabel = (id: string) => {
+    const s = (senders as any[]).find((x) => x.id === id);
+    return s ? `${s.display_name} <${s.address}>` : id;
+  };
+  const diff = prev
+    ? diffVersions(
+        { payload: prev.payload as any, recipients: prev.recipients },
+        { payload: payload as any, recipients: (recipients as any[]).map((r) => ({ email: r.normalized_value, name: r.full_name })) },
+        senderLabel)
+    : null;
   const canDecide = req.status === "pending" && (ctx.isOrgOwner || ctx.roles.includes("approver")) && req.requested_by !== ctx.actor.userId;
   const samples = recipients.slice(0, 2).map((r: any) => {
     const vars = {
@@ -79,6 +105,80 @@ export default async function ApprovalReview({ params }: { params: Promise<{ slu
           </div>
         </div>
       </div>
+
+      {diff && prev && (
+        <Panel>
+          <PanelHeader
+            title={`Changes since v${prev.version.version_number}`}
+            sub={diff.unchanged ? "Identical payload and audience - resubmitted for a fresh decision." : "Only what differs. Everything else is byte-identical to the previously reviewed version."}
+            actions={<StatePill state={prev.version.status} />}
+          />
+          {!diff.unchanged && (
+            <div className="space-y-5 px-5 py-4">
+              {(diff.audienceAdded.length > 0 || diff.audienceRemoved.length > 0) && (
+                <div>
+                  <div className="label mb-2">Audience</div>
+                  <div className="flex flex-wrap gap-2">
+                    {diff.audienceAdded.map((r) => (
+                      <span key={`a-${r.email}`} className="rounded-md bg-[#3ECF9A]/10 px-2.5 py-1 font-mono text-xs text-[#3ECF9A]">+ {r.name ? `${r.name} · ` : ""}{r.email}</span>
+                    ))}
+                    {diff.audienceRemoved.map((r) => (
+                      <span key={`r-${r.email}`} className="rounded-md bg-rose/10 px-2.5 py-1 font-mono text-xs text-rose">- {r.name ? `${r.name} · ` : ""}{r.email}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {diff.settingChanges.length > 0 && (
+                <div>
+                  <div className="label mb-2">Settings</div>
+                  <table className="w-full">
+                    <tbody>
+                      {diff.settingChanges.map((c) => (
+                        <tr key={c.label} className="border-b border-line-soft last:border-0">
+                          <td className="py-2 pr-4 text-xs text-fg-mute">{c.label}</td>
+                          <td className="py-2 pr-2 font-mono text-xs text-rose line-through decoration-rose/50">{c.from}</td>
+                          <td className="py-2 font-mono text-xs text-[#3ECF9A]">{c.to}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {diff.stepChanges.length > 0 && (
+                <div className="space-y-4">
+                  <div className="label">Message copy</div>
+                  {diff.stepChanges.map((sc) => (
+                    <div key={sc.step} className="panel-inset p-4">
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="text-[11px] font-medium text-fg-faint">Step {sc.step}</span>
+                        {sc.kind === "added" && <Pill tone="green">new step</Pill>}
+                        {sc.kind === "removed" && <Pill tone="red">removed</Pill>}
+                      </div>
+                      {sc.subjectFrom && (
+                        <div className="mb-2 space-y-1 border-b border-line-soft pb-2">
+                          <div className="font-mono text-xs text-rose line-through decoration-rose/50">{sc.subjectFrom}</div>
+                          <div className="font-mono text-xs text-[#3ECF9A]">{sc.subjectTo}</div>
+                        </div>
+                      )}
+                      {sc.bodyDiff && (
+                        <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                          {sc.bodyDiff.filter((l) => l.type !== "same").length > 0
+                            ? sc.bodyDiff.map((l, i) => (
+                                <div key={i} className={l.type === "add" ? "bg-[#3ECF9A]/10 text-[#3ECF9A]" : l.type === "del" ? "bg-rose/10 text-rose line-through decoration-rose/40" : "text-fg-faint"}>
+                                  {l.type === "add" ? "+ " : l.type === "del" ? "- " : "  "}{l.text || " "}
+                                </div>
+                              ))
+                            : <span className="text-fg-faint">Body unchanged.</span>}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </Panel>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel>

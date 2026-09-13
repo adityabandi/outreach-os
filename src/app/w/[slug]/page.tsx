@@ -9,7 +9,7 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
   const { slug } = await params;
   const ctx = await requireWorkspace(slug);
   const data = await withTenant(ctx.workspaceId, async (db) => {
-    const [prospects, qualified, sent, replies, meetings, pending, campaigns, activity] = await Promise.all([
+    const [prospects, qualified, sent, replies, meetings, pending, campaigns, activity, health] = await Promise.all([
       db.query(`select count(*)::int n from people`),
       db.query(`select count(*)::int n from qualification_runs where disposition = 'qualified'`),
       db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '7 days'`),
@@ -21,11 +21,31 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
                  from campaigns c order by c.created_at desc limit 6`),
       db.query(`select action, actor_type, occurred_at, metadata_json from audit_events
                  where workspace_id = $1 order by occurred_at desc limit 8`, [ctx.workspaceId]),
+      (async () => {
+        const [kill, failed, senders, suppr, sentToday, cap] = await Promise.all([
+          db.query(`select kill_switch from workspaces where id = $1`, [ctx.workspaceId]),
+          db.query(`select count(*)::int n from job_runs where status = 'failed' and scheduled_at > now() - interval '24 hours'`),
+          db.query(`select verification_status, count(*)::int n from sender_identities group by verification_status`),
+          db.query(`select count(*)::int n from suppression_entries where expires_at is null or expires_at > now()`),
+          db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '24 hours'`),
+          db.query(`select coalesce(min((payload_json->'delivery'->>'daily_workspace_cap')::int), 0) cap from campaign_versions where status = 'running'`),
+        ]);
+        const senderMap = Object.fromEntries(senders.rows.map((r: any) => [r.verification_status, r.n]));
+        return {
+          killSwitch: kill.rows[0]?.kill_switch ?? false,
+          failedJobs: failed.rows[0].n,
+          sendersVerified: senderMap["verified"] ?? 0,
+          sendersTotal: senders.rows.reduce((a: number, r: any) => a + r.n, 0),
+          suppressions: suppr.rows[0].n,
+          sentToday: sentToday.rows[0].n,
+          dailyCap: cap.rows[0].cap,
+        };
+      })(),
     ]);
     return {
       prospects: prospects.rows[0].n, qualified: qualified.rows[0].n, sent: sent.rows[0].n,
       replies: replies.rows[0].n, meetings: meetings.rows[0].n, pending: pending.rows[0].n,
-      campaigns: campaigns.rows, activity: activity.rows,
+      campaigns: campaigns.rows, activity: activity.rows, health,
     };
   });
 
@@ -50,6 +70,48 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
         <Stat label="Meetings" value={data.meetings} tone="#B79CFF" />
         <Stat label="Awaiting approval" value={data.pending} tone={data.pending > 0 ? "#FFB224" : undefined} />
       </div>
+
+      {(() => {
+        const h = data.health;
+        const attention = h.killSwitch || h.failedJobs > 0 || h.sendersVerified < h.sendersTotal;
+        const capPct = h.dailyCap > 0 ? Math.min(100, Math.round((h.sentToday / h.dailyCap) * 100)) : 0;
+        return (
+          <Panel>
+            <PanelHeader
+              title="Send health"
+              sub="Deliverability guardrails across this workspace, live."
+              actions={<Pill tone={attention ? "amber" : "green"} dot>{attention ? "attention" : "all clear"}</Pill>}
+            />
+            <div className="grid grid-cols-2 gap-px bg-line-soft sm:grid-cols-5">
+              <div className="bg-ink-850 px-5 py-4">
+                <div className="label">Kill switch</div>
+                <div className={`mt-1 text-sm font-semibold ${h.killSwitch ? "text-rose" : "text-mint"}`}>{h.killSwitch ? "ENGAGED" : "released"}</div>
+              </div>
+              <div className="bg-ink-850 px-5 py-4">
+                <div className="label">Senders verified</div>
+                <div className="mt-1 text-sm font-semibold">{h.sendersVerified}<span className="text-fg-faint">/{h.sendersTotal}</span></div>
+              </div>
+              <div className="bg-ink-850 px-5 py-4">
+                <div className="label">Sent (24h) vs cap</div>
+                <div className="mt-1 text-sm font-semibold">{h.sentToday}<span className="text-fg-faint">/{h.dailyCap || "-"}</span></div>
+                {h.dailyCap > 0 && (
+                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-ink-750">
+                    <div className={`h-full rounded-full ${capPct > 85 ? "bg-rose" : capPct > 60 ? "bg-flare" : "bg-mint"}`} style={{ width: `${capPct}%` }} />
+                  </div>
+                )}
+              </div>
+              <div className="bg-ink-850 px-5 py-4">
+                <div className="label">Active suppressions</div>
+                <div className="mt-1 text-sm font-semibold">{h.suppressions}</div>
+              </div>
+              <div className="bg-ink-850 px-5 py-4">
+                <div className="label">Failed jobs (24h)</div>
+                <div className={`mt-1 text-sm font-semibold ${h.failedJobs > 0 ? "text-rose" : ""}`}>{h.failedJobs}</div>
+              </div>
+            </div>
+          </Panel>
+        );
+      })()}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Panel className="xl:col-span-2">

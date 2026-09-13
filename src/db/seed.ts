@@ -188,15 +188,34 @@ await q(`insert into conversions (organization_id, workspace_id, person_id, camp
   values ($1,$2,$3,$4,'meeting',null,null,'{"rule":"direct_thread"}'), ($1,$2,$5,$4,'signup',19,'USD','{"rule":"direct_thread"}')`,
   [orgId, A, peopleIds["maya@wildrootwellness.com"].personId, camp1.id, peopleIds["elena@pranaflow.co"].personId]);
 
-// Campaign 2: APPROVAL PENDING (for the review screen)
+// Campaign 2: APPROVAL PENDING (for the review screen). v1 was rejected; v2 shows the diff view.
 const camp2 = await one(`insert into campaigns (organization_id, workspace_id, name, offer_id, icp_id, status, created_by)
   values ($1,$2,'Creator Wave 2 - Europe',$3,$4,'approval_pending',$5) returning id`, [orgId, A, offer.id, icp.id, lara.id]);
+const recipients2v1 = ["elena@pranaflow.co","tom@ritualmorning.com"]
+  .map((e) => ({ person_id: peopleIds[e].personId, contact_point_id: peopleIds[e].contactId }));
+const payload2v1: CampaignPayload = {
+  ...payload1, campaign_id: camp2.id, recipients: recipients2v1, sender_identity_id: senderLara.id,
+  sequence: [{ ...payload1.sequence[0],
+    subject_template: "Quick question, {{first_name}}",
+    body_template: "Hi {{first_name}},\n\nLove what you are building with {{company}}. I run Ayurveda Nest and we are looking for a few creator partners this quarter.\n\nWorth a short chat?\n\n- {{sender_name}}" }],
+  delivery: { ...payload1.delivery, daily_workspace_cap: 30, send_window: { start_hour: 9, end_hour: 17 } },
+};
+const hash2v1 = payloadHash(payload2v1);
+const ver2v1 = await one(`insert into campaign_versions (campaign_id, version_number, payload_json, payload_hash, status, created_by)
+  values ($1,1,$2,$3,'rejected',$4) returning id`, [camp2.id, JSON.stringify(payload2v1), hash2v1, lara.id]);
+for (const r of recipients2v1) {
+  await q(`insert into campaign_version_recipients (campaign_version_id, person_id, contact_point_id) values ($1,$2,$3)`,
+    [ver2v1.id, r.person_id, r.contact_point_id]);
+}
+await q(`insert into approval_requests (organization_id, workspace_id, resource_type, resource_id, payload_hash, status, requested_by, decided_by, decided_at, decision_note)
+  values ($1,$2,'campaign_version',$3,$4,'rejected',$5,$6, now() - interval '3 days','Too thin - add Claire, send from my address, and sharpen the ask.')`,
+  [orgId, A, ver2v1.id, hash2v1, lara.id, aditya.id]);
 const recipients2 = ["elena@pranaflow.co","claire@maisonherbes.fr","tom@ritualmorning.com"]
   .map((e) => ({ person_id: peopleIds[e].personId, contact_point_id: peopleIds[e].contactId }));
 const payload2: CampaignPayload = { ...payload1, campaign_id: camp2.id, recipients: recipients2, sender_identity_id: senderAdi.id };
 const hash2 = payloadHash(payload2);
 const ver2 = await one(`insert into campaign_versions (campaign_id, version_number, payload_json, payload_hash, status, created_by)
-  values ($1,1,$2,$3,'approval_pending',$4) returning id`, [camp2.id, JSON.stringify(payload2), hash2, lara.id]);
+  values ($1,2,$2,$3,'approval_pending',$4) returning id`, [camp2.id, JSON.stringify(payload2), hash2, lara.id]);
 for (const r of recipients2) {
   await q(`insert into campaign_version_recipients (campaign_version_id, person_id, contact_point_id) values ($1,$2,$3)`,
     [ver2.id, r.person_id, r.contact_point_id]);
