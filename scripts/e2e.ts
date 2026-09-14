@@ -7,11 +7,12 @@ import {
 } from "@/server/campaigns";
 import { processDueDeliveries, ingestReply } from "@/server/delivery";
 import { importProspectsCsv, addSuppression, liftSuppression } from "@/server/prospects";
-import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
+import { updateReplyDraft, setReplyDraftStatus, markReplyHandled } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
 import { createOffer, createIcp, createClaim, retireClaim } from "@/server/library";
 import { confirmSenderVerification, createSender, requestSenderVerification, setSenderStatus } from "@/server/senders";
 import { recordUnsubscribe } from "@/server/unsubscribe";
+import { recordConversionForWorkspace, registerConversionCode } from "@/server/conversions";
 import { unsubToken } from "@/domain/unsubscribe";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
@@ -316,18 +317,79 @@ const plGuardRow = (await q(
 check("send-time guard skips a delivery whose line is missing",
   plGuard.skipped >= 1 && plGuardRow?.error_code === "personalization_missing", JSON.stringify(plGuardRow ?? {}));
 
+// 19. conversion webhook mapping: discount-code signup -> conversions row, deduped, attributed
+const sofiaPerson = (await q(`select id from people where normalized_email='sofia@herbaldaily.io'`)).rows[0];
+const arjunPerson = (await q(`select id from people where normalized_email='arjun@vedicliving.in'`)).rows[0];
+await registerConversionCode(laraCtx, { code: "SOFIA-20", personId: sofiaPerson.id, campaignId, source: "rewardful" });
+const convCode = await recordConversionForWorkspace(wsA.id, {
+  externalRef: "e2e_rf_signup_1", eventType: "signup", provider: "rewardful", code: "sofia-20", email: "wrong@example.com",
+});
+const convEmail = await recordConversionForWorkspace(wsA.id, {
+  externalRef: "e2e_rf_revenue_1", eventType: "revenue", provider: "rewardful", code: "UNKNOWN-99", email: "Arjun@VedicLiving.in",
+  amount: 49, currency: "EUR",
+});
+const convDup = await recordConversionForWorkspace(wsA.id, {
+  externalRef: "e2e_rf_signup_1", eventType: "signup", provider: "rewardful", code: "sofia-20",
+});
+const convNone = await recordConversionForWorkspace(wsA.id, {
+  externalRef: "e2e_rf_stray_1", eventType: "signup", provider: "rewardful", code: "NOPE-1", email: "nobody@unknown.io",
+});
+check("code match wins over email and attributes to the code's campaign",
+  convCode.recorded === true && convCode.matchedBy === "code" && convCode.campaignId === campaignId, JSON.stringify(convCode));
+check("email fallback attributes through the person's latest sent delivery",
+  convEmail.recorded === true && convEmail.matchedBy === "email" && convEmail.campaignId === campaignId, JSON.stringify(convEmail));
+check("conversions dedupe on external reference; unknown events record nothing",
+  !convDup.recorded && convDup.reason === "duplicate" && !convNone.recorded && convNone.reason === "no_match");
+const convRows = (await q(
+  `select event_type, value_amount, message_delivery_id is not null as has_delivery
+     from conversions where external_ref in ('e2e_rf_signup_1','e2e_rf_revenue_1') order by external_ref`)).rows;
+const signupRow = convRows.find((r) => r.event_type === "signup");
+const revenueRow = convRows.find((r) => r.event_type === "revenue");
+check("conversion rows carry value and delivery attribution",
+  convRows.length === 2 && signupRow?.has_delivery === true && revenueRow?.has_delivery === true
+    && Number(revenueRow?.value_amount) === 49,
+  JSON.stringify(convRows));
+
+// 20. warm-reply surfacing: interested reply counts as waiting until handled, audited
+await ingestReply(wsA.id, {
+  providerMessageId: `e2e_warm_${Date.now()}`, from: "arjun@vedicliving.in",
+  subject: "Re: Hi Arjun", body: "This sounds good - tell me more about the programs.",
+});
+const warmCount = async () => (await q(
+  `select count(*)::int n from inbound_messages im
+    where im.workspace_id = $1 and im.handled_at is null
+      and exists (select 1 from reply_classifications rc
+                   where rc.inbound_message_id = im.id
+                     and rc.category in ('interested','question','negotiation'))`, [wsA.id])).rows[0].n;
+const warmBefore = await warmCount();
+const warmMsg = (await q(
+  `select im.id from inbound_messages im join reply_classifications rc on rc.inbound_message_id = im.id
+    where rc.category = 'interested' and im.sender_contact = 'arjun@vedicliving.in' order by im.received_at desc limit 1`)).rows[0];
+await markReplyHandled(laraCtx, warmMsg.id);
+const warmAfter = await warmCount();
+let doubleHandleBlocked = false;
+try { await markReplyHandled(laraCtx, warmMsg.id); } catch { doubleHandleBlocked = true; }
+const handledAudit = (await q(`select count(*)::int n from audit_events where action='reply.handled' and target_id=$1`, [warmMsg.id])).rows[0].n;
+check("warm reply waits, handling clears it exactly once, audited",
+  warmBefore >= 1 && warmAfter === warmBefore - 1 && doubleHandleBlocked && handledAudit === 1,
+  `before=${warmBefore} after=${warmAfter} audit=${handledAudit}`);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
+await q(`delete from conversions where external_ref like 'e2e_rf_%'`);
 await q(`delete from reply_drafts where inbound_message_id in (select id from inbound_messages where provider_message_id like 'e2e_%')`);
 await q(`delete from reply_classifications where inbound_message_id in (select id from inbound_messages where provider_message_id like 'e2e_%')`);
 await q(`delete from inbound_messages where provider_message_id like 'e2e_%'`);
+await q(`delete from audit_events where action='reply.handled'`);
 await q(`delete from delivery_events where message_delivery_id in (select md.id from message_deliveries md join campaign_versions cv on cv.id=md.campaign_version_id where cv.campaign_id=$1)`, [cid]);
 await q(`delete from message_deliveries where campaign_version_id in (select id from campaign_versions where campaign_id=$1)`, [cid]);
 await q(`delete from campaign_runs where campaign_version_id in (select id from campaign_versions where campaign_id=$1)`, [cid]);
 await q(`delete from approval_requests where resource_id in (select id from campaign_versions where campaign_id=$1)`, [cid]);
 await q(`delete from campaign_version_recipients where campaign_version_id in (select id from campaign_versions where campaign_id=$1)`, [cid]);
 await q(`delete from campaign_versions where campaign_id=$1`, [cid]);
+await q(`delete from audit_events where action in ('conversion.recorded','conversion_code.register')`);
+await q(`delete from conversion_codes where normalized_code='SOFIA-20'`);
 await q(`delete from campaigns where id=$1`, [cid]);
 await q(`delete from suppression_entries where normalized_value='sofia@herbaldaily.io'`);
 await q(`delete from prospect_list_members where prospect_list_id in (select id from prospect_lists where name like 'E2E Import%')`);

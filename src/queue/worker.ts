@@ -32,6 +32,19 @@ async function tick() {
               subject: String(p.subject ?? ""),
               body: String(p.body ?? ""),
             });
+          } else if (p?.type === "conversion") {
+            // Rewardful / Stripe style: discount-code signup or payment
+            const { recordConversionForWorkspace } = await import("@/server/conversions");
+            await recordConversionForWorkspace(job.workspace_id, {
+              externalRef: String(p.referral_id ?? p.id ?? job.payload_json.externalEventId),
+              eventType: p.event_type === "payment" || p.event_type === "sale" ? "revenue" : "signup",
+              provider: String(job.payload_json.provider ?? "unknown"),
+              code: p.coupon_code ?? p.discount_code ?? p.code ?? null,
+              email: p.email ?? p.customer_email ?? null,
+              amount: p.amount != null ? Number(p.amount) : null,
+              currency: p.currency ?? null,
+              occurredAt: p.occurred_at ?? null,
+            });
           }
           await db.query(
             `update provider_webhook_events set processing_status = 'processed'

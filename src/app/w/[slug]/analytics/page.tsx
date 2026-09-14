@@ -37,6 +37,13 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ slug
                     sum(value_amount) as revenue
                   from conversions group by campaign_id) cnv on cnv.campaign_id = c.id
        group by c.id, c.name, c.status, cnv.meetings, cnv.revenue order by sent desc`);
+    const recentConv = await db.query(
+      `select cn.id, cn.event_type, cn.value_amount, cn.currency, cn.occurred_at, cn.attribution_json,
+              p.full_name, c.name as campaign_name
+         from conversions cn
+         left join people p on p.id = cn.person_id
+         left join campaigns c on c.id = cn.campaign_id
+        order by cn.occurred_at desc limit 12`);
     // 14-day send/reply series
     const series = await db.query(
       `with days as (select generate_series(current_date - 13, current_date, '1 day')::date d)
@@ -44,7 +51,7 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ slug
          (select count(*)::int from message_deliveries md where md.status = 'sent' and md.sent_at::date = d) as sent,
          (select count(*)::int from inbound_messages im where im.received_at::date = d) as replies
        from days order by d`);
-    return { funnel: funnel.rows[0], replies: replies.rows, conversions: conv.rows, byCampaign: byCampaign.rows, series: series.rows };
+    return { funnel: funnel.rows[0], replies: replies.rows, conversions: conv.rows, byCampaign: byCampaign.rows, series: series.rows, recentConv: recentConv.rows };
   });
   const f = data.funnel;
   const totalReplies = data.replies.reduce((a: number, r: any) => a + r.n, 0);
@@ -137,6 +144,29 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ slug
           </ul>
         </Panel>
       </div>
+
+      <Panel>
+        <PanelHeader title="Recent conversions" sub="External signup and revenue events mapped back to the recipient and campaign - discount code match first, signup email as fallback. One row per external event reference." />
+        <table className="w-full">
+          <thead><tr><th className="th">When</th><th className="th">Person</th><th className="th">Type</th><th className="th">Value</th><th className="th">Campaign</th><th className="th">Matched by</th><th className="th">Provider</th></tr></thead>
+          <tbody>
+            {data.recentConv.map((cn: any) => (
+              <tr key={cn.id} className="hover:bg-ink-850/60">
+                <td className="td text-xs text-fg-mute">{new Date(cn.occurred_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
+                <td className="td font-medium">{cn.full_name ?? <span className="text-fg-faint">-</span>}</td>
+                <td className="td text-fg-soft">{cn.event_type}</td>
+                <td className="td font-mono text-xs text-fg-mute">{cn.value_amount != null ? `${cn.currency ?? "$"}${Number(cn.value_amount).toFixed(2)}` : "-"}</td>
+                <td className="td text-fg-mute">{cn.campaign_name ?? <span className="text-fg-faint">-</span>}</td>
+                <td className="td text-xs text-fg-mute">{cn.attribution_json?.matched_by ?? "-"}{cn.attribution_json?.code ? <span className="ml-1 font-mono">({cn.attribution_json.code})</span> : ""}</td>
+                <td className="td text-xs text-fg-mute">{cn.attribution_json?.provider ?? "-"}</td>
+              </tr>
+            ))}
+            {data.recentConv.length === 0 && (
+              <tr><td colSpan={7} className="td py-6 text-center text-sm text-fg-faint">No conversions recorded yet. When a recipient signs up with their discount code, the Rewardful or Stripe webhook lands here.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Panel>
     </div>
   );
 }
