@@ -4,6 +4,7 @@ import { audit } from "@/domain/audit";
 import { matchesSuppression, withinSendWindow } from "@/domain/compliance";
 import type { CampaignPayload } from "@/domain/payload";
 import { resolveMailboxAdapter } from "@/domain/adapters/resolve";
+import { unsubUrl } from "@/domain/unsubscribe";
 import { MockModelAdapter } from "@/domain/adapters/mock-model";
 
 /**
@@ -96,7 +97,11 @@ export async function processDueDeliveries(workspaceId: string, limit = 50) {
         sender_name: snd.display_name,
       };
       const subject = step.subject_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
-      const body = step.body_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
+      const bodyTemplate = step.body_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
+      // transport-level footer: every marketing send carries a working one-click
+      // unsubscribe link, regardless of the approved copy
+      const unsub = unsubUrl(process.env.PUBLIC_BASE_URL ?? "http://localhost:3100", workspaceId, d.contact_point_id, addr);
+      const body = `${bodyTemplate}\n\n---\nNot for you? Unsubscribe: ${unsub}`;
       const adapter = await resolveMailboxAdapter(db, workspaceId);
       await db.query(`update message_deliveries set status = 'sending' where id = $1`, [d.id]);
       const result = await adapter.send({

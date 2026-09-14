@@ -54,6 +54,7 @@ node --conditions=react-server --import tsx scripts/e2e.ts   # live e2e: approva
 - Approved versions are immutable at the database layer (trigger); launch recomputes the payload hash and refuses stale approvals
 - Requester cannot approve their own version
 - Senders verify by emailed 6-digit code (sha256 at rest, 24h expiry); campaigns refuse unverified/disabled senders at readiness AND immediately before each send
+- Every send carries a one-click unsubscribe link (HMAC-signed token bound to workspace + recipient + address); GET renders a confirmation, POST answers RFC 8058 one-click clients; suppression is idempotent and audited
 - Suppression checked at scheduling AND immediately before send; unsubscribe replies suppress before any AI runs
 - Pause blocks every not-yet-sent delivery; workspace + org kill switches
 - Caps (workspace/sender/per-domain) enforced transactionally; sends only inside the timezone window

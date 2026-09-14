@@ -10,6 +10,8 @@ import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
 import { createOffer, createIcp, createClaim, retireClaim } from "@/server/library";
 import { confirmSenderVerification, createSender, requestSenderVerification, setSenderStatus } from "@/server/senders";
+import { recordUnsubscribe } from "@/server/unsubscribe";
+import { unsubToken } from "@/domain/unsubscribe";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
 const sys = new pg.Client("postgres://outreach:outreach@localhost:5433/outreach_os");
@@ -241,6 +243,23 @@ check("disabled sender: readiness-blocked at send time, deliveries skipped not s
   guardRes.sent === 0 && guardRows.length === 1 && guardRows[0].status === "skipped" && guardRows[0].error_code === "sender_unavailable",
   JSON.stringify(guardRows));
 
+// 17. one-click unsubscribe: footer link in every send, token-bound suppression, tamper rejected
+const sentMail = (await q(`select body from outbox_messages where subject='Hi Sofia' limit 1`)).rows[0];
+const linkMatch = sentMail?.body.match(/Unsubscribe: (http\S+)/);
+check("every sent email carries a one-click unsubscribe link", !!linkMatch);
+const goodToken = unsubToken(wsA.id, guardCp.id, "e2e.guard@example.com");
+const forged = goodToken.slice(0, -2) + (goodToken.endsWith("AA") ? "BB" : "AA");
+const forgedRes = await recordUnsubscribe(forged);
+const goodRes = await recordUnsubscribe(goodToken);
+const unsubSup = (await q(
+  `select 1 from suppression_entries where normalized_value='e2e.guard@example.com' and source='unsubscribe_link'`)).rowCount;
+const otherCp = (await q(
+  `select cp.id from contact_points cp where cp.normalized_value='arjun@vedicliving.in' limit 1`)).rows[0];
+// a token that names a real contact but a different address must not suppress
+const mismatchRes = await recordUnsubscribe(unsubToken(wsA.id, otherCp.id, "e2e.guard@example.com"));
+check("unsubscribe token suppresses only its exact bound recipient",
+  !forgedRes.ok && goodRes.ok === true && (unsubSup ?? 0) === 1 && !mismatchRes.ok);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -281,6 +300,7 @@ await q(`delete from campaigns where id=$1`, [guardCid]);
 await q(`delete from outbox_messages where to_address like 'e2e.%@ayurvedanest.org'`);
 await q(`delete from audit_events where action like 'sender.%'`);
 await q(`delete from sender_identities where address like 'e2e.%@ayurvedanest.org'`);
+await q(`delete from suppression_entries where normalized_value='e2e.guard@example.com'`);
 await q(`delete from contact_points where normalized_value='e2e.guard@example.com'`);
 await q(`delete from people where normalized_email='e2e.guard@example.com'`);
 await sys.end();
