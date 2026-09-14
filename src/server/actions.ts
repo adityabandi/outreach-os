@@ -12,6 +12,7 @@ import { importProspectsCsv, setContactVerification, addSuppression, liftSuppres
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
 import { setReplyDraftStatus, updateReplyDraft } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
+import { confirmSenderVerification, createSender, requestSenderVerification, setSenderStatus } from "@/server/senders";
 import { archiveOffer, createClaim, createIcp, createOffer, retireClaim } from "@/server/library";
 import type { CampaignPayload } from "@/domain/payload";
 
@@ -194,6 +195,34 @@ export async function createClaimAction(slug: string, formData: FormData) {
 export async function retireClaimAction(slug: string, claimId: string) {
   const ctx = await requireWorkspace(slug);
   await retireClaim(ctx, claimId);
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function createSenderAction(slug: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await createSender(ctx, {
+    displayName: String(formData.get("display_name") ?? ""),
+    address: String(formData.get("address") ?? ""),
+    dailyCap: Number(formData.get("daily_cap") ?? 25),
+  });
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function requestSenderVerificationAction(slug: string, senderId: string) {
+  const ctx = await requireWorkspace(slug);
+  await requestSenderVerification(ctx, senderId);
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function confirmSenderVerificationAction(slug: string, senderId: string, formData: FormData) {
+  const ctx = await requireWorkspace(slug);
+  await confirmSenderVerification(ctx, senderId, String(formData.get("code") ?? ""));
+  revalidatePath(`/w/${slug}/settings`);
+}
+
+export async function setSenderStatusAction(slug: string, senderId: string, status: "active" | "disabled") {
+  const ctx = await requireWorkspace(slug);
+  await setSenderStatus(ctx, senderId, status);
   revalidatePath(`/w/${slug}/settings`);
 }
 

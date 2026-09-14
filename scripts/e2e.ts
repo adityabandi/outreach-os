@@ -9,6 +9,7 @@ import { importProspectsCsv, addSuppression, liftSuppression } from "@/server/pr
 import { updateReplyDraft, setReplyDraftStatus } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
 import { createOffer, createIcp, createClaim, retireClaim } from "@/server/library";
+import { confirmSenderVerification, createSender, requestSenderVerification, setSenderStatus } from "@/server/senders";
 import type { WorkspaceContext } from "@/domain/tenancy";
 
 const sys = new pg.Client("postgres://outreach:outreach@localhost:5433/outreach_os");
@@ -172,6 +173,74 @@ const claimGone = (await q(`select status from approved_claims where id=$1`, [cl
 check("library: operator creates offer/ICP, claims approver-gated + retired",
   claimBlocked && claimRow.approved_by === adi.id && claimGone === "retired");
 
+// 14. sender verification lifecycle: admin-only, emailed code, expiry, disable stops sends
+let createDenied = false;
+try { await createSender(laraCtx, { displayName: "Nope", address: "nope@ayurvedanest.org", dailyCap: 5 }); }
+catch (e: any) { createDenied = e.name === "AuthzError"; }
+const { senderId: e2eSender } = await createSender(adiFull, { displayName: "E2E Sender", address: "E2E.Sender@ayurvedanest.org", dailyCap: 5 });
+let dupDenied = false;
+try { await createSender(adiFull, { displayName: "Dup", address: "e2e.sender@ayurvedanest.org", dailyCap: 5 }); }
+catch (e: any) { dupDenied = e.code === "conflict"; }
+await requestSenderVerification(adiFull, e2eSender);
+const pend = (await q(`select verification_status, verification_token_hash, verification_expires_at from sender_identities where id=$1`, [e2eSender])).rows[0];
+const vmail = (await q(
+  `select body from outbox_messages where to_address='e2e.sender@ayurvedanest.org' order by created_at desc limit 1`)).rows[0];
+const vcode = vmail?.body.match(/ {2}(\d{6})\n/)?.[1];
+const wrongCode = vcode === "000000" ? "000001" : "000000";
+let wrongDenied = false;
+try { await confirmSenderVerification(adiFull, e2eSender, wrongCode); } catch (e: any) { wrongDenied = e.code === "verification_mismatch"; }
+const stillPending = (await q(`select verification_status from sender_identities where id=$1`, [e2eSender])).rows[0].verification_status;
+await confirmSenderVerification(adiFull, e2eSender, vcode ?? "xxxxxx");
+const verifiedRow = (await q(
+  `select verification_status, verified_at, verification_token_hash from sender_identities where id=$1`, [e2eSender])).rows[0];
+check("sender verification: admin-only, unique address, code emailed, mismatch rejected, correct code verifies",
+  createDenied && dupDenied && pend.verification_status === "pending" && !!pend.verification_token_hash &&
+  !!pend.verification_expires_at && !!vcode && wrongDenied && stillPending === "pending" &&
+  verifiedRow.verification_status === "verified" && !!verifiedRow.verified_at && !verifiedRow.verification_token_hash);
+
+// 15. expired code fails the sender; re-request restores pending
+const { senderId: expSender } = await createSender(adiFull, { displayName: "E2E Expiry", address: "e2e.expiry@ayurvedanest.org", dailyCap: 5 });
+await requestSenderVerification(adiFull, expSender);
+await q(`update sender_identities set verification_expires_at = now() - interval '1 hour' where id=$1`, [expSender]);
+let expiredDenied = false;
+try { await confirmSenderVerification(adiFull, expSender, "123456"); } catch (e: any) { expiredDenied = e.code === "verification_expired"; }
+const failedRow = (await q(`select verification_status, verification_token_hash from sender_identities where id=$1`, [expSender])).rows[0];
+await requestSenderVerification(adiFull, expSender);
+const rePend = (await q(`select verification_status from sender_identities where id=$1`, [expSender])).rows[0].verification_status;
+check("sender verification: expiry fails + clears code, re-request returns to pending",
+  expiredDenied && failedRow.verification_status === "failed" && !failedRow.verification_token_hash && rePend === "pending");
+
+// 16. disabling a sender skips its already-scheduled deliveries at send time
+// fresh recipient: sofia is suppressed and arjun has replied by this point
+const guardPerson = (await q(
+  `insert into people (organization_id, workspace_id, full_name, normalized_email)
+   values ($1,$2,'E2E Guard','e2e.guard@example.com') returning id`, [wsA.organization_id, wsA.id])).rows[0];
+const guardCp = (await q(
+  `insert into contact_points (organization_id, workspace_id, person_id, normalized_value, verification_status)
+   values ($1,$2,$3,'e2e.guard@example.com','verified') returning id`, [wsA.organization_id, wsA.id, guardPerson.id])).rows[0];
+const guardRecips = [{ person_id: guardPerson.id, contact_point_id: guardCp.id }];
+const { campaignId: guardCid, versionId: guardVid } = await createCampaign(laraCtx, { name: "E2E Sender Guard" });
+await saveDraftPayload(laraCtx, guardVid, {
+  sender_identity_id: e2eSender, channel: "email", offer_id: null, icp_id: null, claim_ids: [],
+  recipients: guardRecips,
+  sequence: [{ step_number: 1, delay_minutes: 0, subject_template: "Guard {{first_name}}", body_template: "Body for {{first_name}}.", stop_conditions: ["reply","bounce","unsubscribe","conversion"] }],
+  personalization_rules: { allowed_variables: ["first_name","full_name","company","title","sender_name"] },
+  delivery: { timezone: "Europe/Madrid", send_window: { start_hour: 0, end_hour: 24 }, daily_workspace_cap: 50, sender_daily_cap: 25, per_domain_cap: 5 },
+  follow_up: { enabled: false }, reply_policy: { auto_send: false }, suppression_policy: { check_before_send: true },
+});
+await withTenant(wsA.id, (db) => Promise.all(guardRecips.map((r) =>
+  db.query(`insert into campaign_version_recipients (campaign_version_id, person_id, contact_point_id) values ($1,$2,$3) on conflict do nothing`, [guardVid, r.person_id, r.contact_point_id]))));
+const guardApproval = await requestApproval(laraCtx, guardVid);
+await decideApproval(adiCtx, guardApproval.approvalId, "approved", "e2e guard");
+await launchVersion(laraCtx, guardVid);
+await setSenderStatus(adiFull, e2eSender, "disabled");
+const guardRes = await processDueDeliveries(wsA.id);
+const guardRows = (await q(
+  `select status, error_code, count(*) from message_deliveries where campaign_version_id=$1 group by 1,2`, [guardVid])).rows;
+check("disabled sender: readiness-blocked at send time, deliveries skipped not sent",
+  guardRes.sent === 0 && guardRows.length === 1 && guardRows[0].status === "skipped" && guardRows[0].error_code === "sender_unavailable",
+  JSON.stringify(guardRows));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -202,5 +271,17 @@ await q(`delete from offers where name='E2E Offer'`);
 await q(`delete from ideal_customer_profiles where name='E2E ICP'`);
 await q(`delete from outbox_messages where subject in ('Hi Sofia','Hi Arjun') or subject like 'Re: Hi%'`);
 await q(`delete from job_runs where job_type='campaign.schedule'`);
+await q(`delete from delivery_events where message_delivery_id in (select id from message_deliveries where campaign_version_id=$1)`, [guardVid]);
+await q(`delete from message_deliveries where campaign_version_id=$1`, [guardVid]);
+await q(`delete from campaign_runs where campaign_version_id=$1`, [guardVid]);
+await q(`delete from approval_requests where resource_id=$1`, [guardVid]);
+await q(`delete from campaign_version_recipients where campaign_version_id=$1`, [guardVid]);
+await q(`delete from campaign_versions where id=$1`, [guardVid]);
+await q(`delete from campaigns where id=$1`, [guardCid]);
+await q(`delete from outbox_messages where to_address like 'e2e.%@ayurvedanest.org'`);
+await q(`delete from audit_events where action like 'sender.%'`);
+await q(`delete from sender_identities where address like 'e2e.%@ayurvedanest.org'`);
+await q(`delete from contact_points where normalized_value='e2e.guard@example.com'`);
+await q(`delete from people where normalized_email='e2e.guard@example.com'`);
 await sys.end();
 process.exit(fail > 0 ? 1 : 0);

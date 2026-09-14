@@ -41,10 +41,12 @@ await q(`insert into approved_claims (organization_id, workspace_id, claim_text,
   ($1,$2,'7-day free trial on both plans','https://ayurvedanest.org/pricing','active',$3),
   ($1,$2,'Price locked for the life of the subscription','https://ayurvedanest.org/pricing','active',$3)`,
   [orgId, A, aditya.id]);
-const senderLara = await one(`insert into sender_identities (organization_id, workspace_id, display_name, address, verification_status, daily_cap)
-  values ($1,$2,'Lara from Ayurveda Nest','lara@ayurvedanest.org','verified',25) returning id`, [orgId, A]);
-const senderAdi = await one(`insert into sender_identities (organization_id, workspace_id, display_name, address, verification_status, daily_cap)
-  values ($1,$2,'Aditya Bandi','aditya@ayurvedanest.org','verified',10) returning id`, [orgId, A]);
+const senderLara = await one(`insert into sender_identities (organization_id, workspace_id, display_name, address, verification_status, daily_cap, verified_at)
+  values ($1,$2,'Lara from Ayurveda Nest','lara@ayurvedanest.org','verified',25, now()) returning id`, [orgId, A]);
+const senderAdi = await one(`insert into sender_identities (organization_id, workspace_id, display_name, address, verification_status, daily_cap, verified_at)
+  values ($1,$2,'Aditya Bandi','aditya@ayurvedanest.org','verified',10, now()) returning id`, [orgId, A]);
+await q(`insert into sender_identities (organization_id, workspace_id, display_name, address, verification_status, daily_cap)
+  values ($1,$2,'Ayurveda Nest Growth','growth@ayurvedanest.org','unverified',25)`, [orgId, A]);
 await q(`insert into integrations (organization_id, workspace_id, provider, external_account_id, status, last_health_check_at)
   values ($1,$2,'mock-mailbox','dev-outbox','healthy', now())`, [orgId, A]);
 await q(`insert into success_events (organization_id, workspace_id, name, event_type) values

@@ -105,6 +105,8 @@ export async function validateReadiness(db: Db, ctx: WorkspaceContext, versionId
   if (sender.rowCount === 0) issues.push({ level: "error", code: "sender_missing", message: "Sender identity does not exist." });
   else if (sender.rows[0].verification_status !== "verified")
     issues.push({ level: "error", code: "sender_unverified", message: `Sender ${sender.rows[0].address} is not verified.` });
+  else if (sender.rows[0].status !== "active")
+    issues.push({ level: "error", code: "sender_disabled", message: `Sender ${sender.rows[0].address} is disabled.` });
 
   if (!payload.recipients?.length) issues.push({ level: "error", code: "no_recipients", message: "Recipient list is empty." });
   if (!payload.sequence?.length) issues.push({ level: "error", code: "no_sequence", message: "Sequence has no steps." });

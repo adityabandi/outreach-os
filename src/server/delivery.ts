@@ -78,6 +78,14 @@ export async function processDueDeliveries(workspaceId: string, limit = 50) {
         `select p.full_name, p.title, co.name as company from people p left join companies co on co.id = p.company_id where p.id = $1`,
         [d.person_id]);
       const senderRow = await db.query(`select * from sender_identities where id = $1`, [d.sender_identity_id]);
+      const snd = senderRow.rows[0];
+      // re-checked immediately before send, like suppression: a sender that lost
+      // verification or was disabled after scheduling must not send
+      if (!snd || snd.verification_status !== "verified" || snd.status !== "active") {
+        await db.query(`update message_deliveries set status = 'skipped', error_code = 'sender_unavailable' where id = $1`, [d.id]);
+        skipped++;
+        continue;
+      }
       const step = payload.sequence.find((s) => s.step_number === d.step_number);
       if (!step) { skipped++; continue; }
       const vars = {
@@ -85,14 +93,14 @@ export async function processDueDeliveries(workspaceId: string, limit = 50) {
         full_name: person.rows[0].full_name,
         company: person.rows[0].company ?? "",
         title: person.rows[0].title ?? "",
-        sender_name: senderRow.rows[0].display_name,
+        sender_name: snd.display_name,
       };
       const subject = step.subject_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
       const body = step.body_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
       const adapter = new MockMailboxAdapter(db, workspaceId);
       await db.query(`update message_deliveries set status = 'sending' where id = $1`, [d.id]);
       const result = await adapter.send({
-        fromAddress: senderRow.rows[0].address, fromName: senderRow.rows[0].display_name,
+        fromAddress: snd.address, fromName: snd.display_name,
         toAddress: addr, subject, body, threadRef: d.thread_ref, idempotencyKey: d.idempotency_key,
       });
       await db.query(

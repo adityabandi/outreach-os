@@ -1,7 +1,10 @@
 import { requireWorkspace } from "@/server/auth";
 import { withTenant } from "@/db/client";
 import { Panel, PanelHeader, StatePill, Pill } from "@/ui/primitives";
-import { updatePolicyAction, createOfferAction, archiveOfferAction, createIcpAction, createClaimAction, retireClaimAction } from "@/server/actions";
+import {
+  updatePolicyAction, createOfferAction, archiveOfferAction, createIcpAction, createClaimAction, retireClaimAction,
+  createSenderAction, requestSenderVerificationAction, confirmSenderVerificationAction, setSenderStatusAction,
+} from "@/server/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +26,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
   });
   const canOperateWs = ctx.isOrgOwner || ctx.roles.includes("campaign_operator") || ctx.roles.includes("workspace_admin");
   const canApproveWs = ctx.isOrgOwner || ctx.roles.includes("approver");
+  const canAdminWs = ctx.isOrgOwner || ctx.roles.includes("workspace_admin");
   return (
     <div className="space-y-6">
       <div>
@@ -110,15 +114,46 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
           )}
         </Panel>
         <Panel>
-          <PanelHeader title="Senders & integrations" />
+          <PanelHeader title="Senders & integrations" sub="Campaigns only send from verified, active senders - re-checked before every send." />
           <ul className="divide-y divide-line-soft">
             {data.senders.map((s: any) => (
-              <li key={s.id} className="flex items-center justify-between px-5 py-3">
-                <div>
-                  <div className="text-sm font-medium">{s.display_name}</div>
-                  <div className="font-mono text-xs text-fg-mute">{s.address} · cap {s.daily_cap}/day</div>
+              <li key={s.id} className="px-5 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      {s.display_name}
+                      {s.status !== "active" && <Pill tone="red">disabled</Pill>}
+                    </div>
+                    <div className="font-mono text-xs text-fg-mute">{s.address} · cap {s.daily_cap}/day</div>
+                    <div className="mt-0.5 text-[11px] text-fg-faint">
+                      {s.verification_status === "verified" && s.verified_at && `verified ${new Date(s.verified_at).toLocaleDateString("en-GB")}`}
+                      {s.verification_status === "pending" && s.verification_expires_at && `code sent ${new Date(s.verification_sent_at).toLocaleString("en-GB")} · expires ${new Date(s.verification_expires_at).toLocaleString("en-GB")}`}
+                      {s.verification_status === "failed" && "last verification failed - request a new code"}
+                      {s.verification_status === "unverified" && "never verified"}
+                    </div>
+                  </div>
+                  <span className="flex items-center gap-2">
+                    <StatePill state={s.verification_status} />
+                    {canAdminWs && s.status === "active" && (s.verification_status === "unverified" || s.verification_status === "failed") && (
+                      <form action={requestSenderVerificationAction.bind(null, slug, s.id)}><button className="btn-ghost !px-2 !py-0.5 text-[11px]">Send code</button></form>
+                    )}
+                    {canAdminWs && s.status === "active" && s.verification_status === "verified" && (
+                      <form action={setSenderStatusAction.bind(null, slug, s.id, "disabled")}><button className="btn-ghost !px-2 !py-0.5 text-[11px]">Disable</button></form>
+                    )}
+                    {canAdminWs && s.status !== "active" && (
+                      <form action={setSenderStatusAction.bind(null, slug, s.id, "active")}><button className="btn-ghost !px-2 !py-0.5 text-[11px]">Enable</button></form>
+                    )}
+                  </span>
                 </div>
-                <StatePill state={s.verification_status} />
+                {canAdminWs && s.status === "active" && s.verification_status === "pending" && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <form action={confirmSenderVerificationAction.bind(null, slug, s.id)} className="flex items-center gap-2">
+                      <input name="code" className="input !w-32 !py-1 text-center font-mono text-xs tracking-[0.3em]" placeholder="000000" maxLength={6} pattern="[0-9]{6}" required />
+                      <button className="btn-primary !px-2.5 !py-1 text-xs">Confirm</button>
+                    </form>
+                    <form action={requestSenderVerificationAction.bind(null, slug, s.id)}><button className="btn-ghost !px-2 !py-0.5 text-[11px]">Resend</button></form>
+                  </div>
+                )}
               </li>
             ))}
             {data.integrations.map((i: any, k: number) => (
@@ -131,6 +166,19 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
               </li>
             ))}
           </ul>
+          {canAdminWs && (
+            <form action={createSenderAction.bind(null, slug)} className="space-y-2 border-t border-line-soft px-5 py-4">
+              <div className="label">New sender - verified by emailed code before it can send</div>
+              <div className="grid grid-cols-2 gap-2">
+                <input name="display_name" className="input !py-1.5 text-xs" placeholder="Display name" required />
+                <input name="address" type="email" className="input !py-1.5 font-mono !text-[11px]" placeholder="address@domain.org" required />
+              </div>
+              <div className="flex items-center justify-between">
+                <input name="daily_cap" type="number" min={1} max={10000} defaultValue={25} className="input !w-28 !py-1.5 text-xs" required />
+                <button className="btn-ghost !px-2.5 !py-1 text-xs">Add sender</button>
+              </div>
+            </form>
+          )}
         </Panel>
         <Panel>
           <PanelHeader title="Policy" sub={`Version ${data.policy?.version ?? 1} - every save versions forward and audits the delta.`} />
