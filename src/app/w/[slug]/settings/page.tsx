@@ -15,16 +15,15 @@ export default async function SettingsPage({
   const { sender_error } = await searchParams;
   const ctx = await requireWorkspace(slug);
   const data = await withTenant(ctx.workspaceId, async (db) => {
-    const [ws, offers, icps, claims, senders, integrations, policies, members] = await Promise.all([
-      db.query(`select * from workspaces where id = $1`, [ctx.workspaceId]),
-      db.query(`select * from offers order by created_at`),
-      db.query(`select * from ideal_customer_profiles`),
-      db.query(`select ac.*, u.display_name as approver from approved_claims ac left join users u on u.id = ac.approved_by`),
-      db.query(`select * from sender_identities`),
-      db.query(`select provider, external_account_id, status, last_health_check_at from integrations`),
-      db.query(`select * from workspace_policies order by created_at desc limit 1`),
-      db.query(`select u.display_name, u.email, array_agg(wm.role order by wm.role) as roles from workspace_memberships wm join users u on u.id = wm.user_id group by u.id, u.display_name, u.email order by u.display_name`),
-    ]);
+    // sequential: one tenant transaction = one pg client, which serializes anyway
+    const ws = await db.query(`select * from workspaces where id = $1`, [ctx.workspaceId]);
+    const offers = await db.query(`select * from offers order by created_at`);
+    const icps = await db.query(`select * from ideal_customer_profiles`);
+    const claims = await db.query(`select ac.*, u.display_name as approver from approved_claims ac left join users u on u.id = ac.approved_by`);
+    const senders = await db.query(`select * from sender_identities order by address`);
+    const integrations = await db.query(`select provider, external_account_id, status, last_health_check_at from integrations`);
+    const policies = await db.query(`select * from workspace_policies order by created_at desc limit 1`);
+    const members = await db.query(`select u.display_name, u.email, array_agg(wm.role order by wm.role) as roles from workspace_memberships wm join users u on u.id = wm.user_id group by u.id, u.display_name, u.email order by u.display_name`);
     return { ws: ws.rows[0], offers: offers.rows, icps: icps.rows, claims: claims.rows, senders: senders.rows, integrations: integrations.rows, policy: policies.rows[0], members: members.rows };
   });
   const canOperateWs = ctx.isOrgOwner || ctx.roles.includes("campaign_operator") || ctx.roles.includes("workspace_admin");

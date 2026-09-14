@@ -9,27 +9,25 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
   const { slug } = await params;
   const ctx = await requireWorkspace(slug);
   const data = await withTenant(ctx.workspaceId, async (db) => {
-    const [prospects, qualified, sent, replies, meetings, pending, campaigns, activity, health] = await Promise.all([
-      db.query(`select count(*)::int n from people`),
-      db.query(`select count(*)::int n from qualification_runs where disposition = 'qualified'`),
-      db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '7 days'`),
-      db.query(`select count(*)::int n from inbound_messages where received_at > now() - interval '7 days'`),
-      db.query(`select count(*)::int n from conversions where event_type = 'meeting'`),
-      db.query(`select count(*)::int n from approval_requests where status = 'pending'`),
-      db.query(`select c.id, c.name, c.status,
+    // sequential: one tenant transaction = one pg client, which serializes anyway
+    const prospects = await db.query(`select count(*)::int n from people`);
+    const qualified = await db.query(`select count(*)::int n from qualification_runs where disposition = 'qualified'`);
+    const sent = await db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '7 days'`);
+    const replies = await db.query(`select count(*)::int n from inbound_messages where received_at > now() - interval '7 days'`);
+    const meetings = await db.query(`select count(*)::int n from conversions where event_type = 'meeting'`);
+    const pending = await db.query(`select count(*)::int n from approval_requests where status = 'pending'`);
+    const campaigns = await db.query(`select c.id, c.name, c.status,
                   (select count(*) from campaign_versions cv where cv.campaign_id = c.id) as versions
-                 from campaigns c order by c.created_at desc limit 6`),
-      db.query(`select action, actor_type, occurred_at, metadata_json from audit_events
-                 where workspace_id = $1 order by occurred_at desc limit 8`, [ctx.workspaceId]),
-      (async () => {
-        const [kill, failed, senders, suppr, sentToday, cap] = await Promise.all([
-          db.query(`select kill_switch from workspaces where id = $1`, [ctx.workspaceId]),
-          db.query(`select count(*)::int n from job_runs where status = 'failed' and scheduled_at > now() - interval '24 hours'`),
-          db.query(`select verification_status, count(*)::int n from sender_identities group by verification_status`),
-          db.query(`select count(*)::int n from suppression_entries where expires_at is null or expires_at > now()`),
-          db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '24 hours'`),
-          db.query(`select coalesce(min((payload_json->'delivery'->>'daily_workspace_cap')::int), 0) cap from campaign_versions where status = 'running'`),
-        ]);
+                 from campaigns c order by c.created_at desc limit 6`);
+    const activity = await db.query(`select action, actor_type, occurred_at, metadata_json from audit_events
+                 where workspace_id = $1 order by occurred_at desc limit 8`, [ctx.workspaceId]);
+    const health = await (async () => {
+        const kill = await db.query(`select kill_switch from workspaces where id = $1`, [ctx.workspaceId]);
+        const failed = await db.query(`select count(*)::int n from job_runs where status = 'failed' and scheduled_at > now() - interval '24 hours'`);
+        const senders = await db.query(`select verification_status, count(*)::int n from sender_identities group by verification_status`);
+        const suppr = await db.query(`select count(*)::int n from suppression_entries where expires_at is null or expires_at > now()`);
+        const sentToday = await db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '24 hours'`);
+        const cap = await db.query(`select coalesce(min((payload_json->'delivery'->>'daily_workspace_cap')::int), 0) cap from campaign_versions where status = 'running'`);
         const senderMap = Object.fromEntries(senders.rows.map((r: any) => [r.verification_status, r.n]));
         return {
           killSwitch: kill.rows[0]?.kill_switch ?? false,
@@ -40,8 +38,7 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
           sentToday: sentToday.rows[0].n,
           dailyCap: cap.rows[0].cap,
         };
-      })(),
-    ]);
+      })();
     return {
       prospects: prospects.rows[0].n, qualified: qualified.rows[0].n, sent: sent.rows[0].n,
       replies: replies.rows[0].n, meetings: meetings.rows[0].n, pending: pending.rows[0].n,
