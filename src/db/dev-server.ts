@@ -5,15 +5,19 @@ import { execFileSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const pkg = require.resolve("@embedded-postgres/linux-x64/package.json");
-const bin = pkg.replace(/package\.json$/, "native/bin");
+// The native package's exports map only exposes its main entry, so resolve that
+// and walk up to the package root (works regardless of the exports map).
+const entry = require.resolve("@embedded-postgres/linux-x64");
+const pkgRoot = entry.replace(/\/dist\/index\.js$/, "");
+const bin = `${pkgRoot}/native/bin`;
 const dir = process.env.PGDATA ?? `${process.env.HOME}/pgdata`;
 const port = process.env.PGPORT ?? "5433";
 
 if (!existsSync(`${dir}/PG_VERSION`)) {
   mkdirSync(dir, { recursive: true });
   const { writeFileSync } = require("node:fs");
-  const pwfile = `${dir}/.pwfile`;
+  // Keep the pwfile outside the data dir: initdb refuses a non-empty directory.
+  const pwfile = `${dir}.init-pw`;
   writeFileSync(pwfile, "outreach\n", { mode: 0o600 });
   execFileSync(`${bin}/initdb`, ["-D", dir, "-U", "outreach", "-E", "UTF8", `--pwfile=${pwfile}`], {
     stdio: "inherit",
