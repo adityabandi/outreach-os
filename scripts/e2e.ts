@@ -3,6 +3,7 @@ import pg from "pg";
 import { withTenant, withSystem } from "@/db/client";
 import {
   createCampaign, saveDraftPayload, requestApproval, decideApproval, launchVersion, controlRun,
+  generatePersonalization,
 } from "@/server/campaigns";
 import { processDueDeliveries, ingestReply } from "@/server/delivery";
 import { importProspectsCsv, addSuppression, liftSuppression } from "@/server/prospects";
@@ -260,6 +261,61 @@ const mismatchRes = await recordUnsubscribe(unsubToken(wsA.id, otherCp.id, "e2e.
 check("unsubscribe token suppresses only its exact bound recipient",
   !forgedRes.ok && goodRes.ok === true && (unsubSup ?? 0) === 1 && !mismatchRes.ok);
 
+// 18. personalization lines: readiness gate, evidence-grounded generation, send-time guard
+await setSenderStatus(adiFull, e2eSender, "active");
+const plPerson = (await q(
+  `insert into people (organization_id, workspace_id, full_name, normalized_email)
+   values ($1,$2,'E2E Personal','e2e.personal@example.com') returning id`, [wsA.organization_id, wsA.id])).rows[0];
+const plCp = (await q(
+  `insert into contact_points (organization_id, workspace_id, person_id, normalized_value, verification_status)
+   values ($1,$2,$3,'e2e.personal@example.com','verified') returning id`, [wsA.organization_id, wsA.id, plPerson.id])).rows[0];
+await q(
+  `insert into evidence_items (organization_id, workspace_id, subject_type, subject_id, source_type, excerpt, content_hash)
+   values ($1,$2,'person',$3,'manual','runs a weekly Ayurveda newsletter with 12k subscribers', md5('e2e-personal-evidence'))`,
+  [wsA.organization_id, wsA.id, plPerson.id]);
+const plPayload = {
+  sender_identity_id: e2eSender, channel: "email", offer_id: null, icp_id: null, claim_ids: [],
+  recipients: [{ person_id: plPerson.id, contact_point_id: plCp.id }],
+  sequence: [{ step_number: 1, delay_minutes: 0, subject_template: "Personal Hi", body_template: "Hi {{first_name}} - {{personalization_line}} Would love to connect.", stop_conditions: ["reply","bounce","unsubscribe","conversion"] }],
+  personalization_rules: { allowed_variables: ["first_name","full_name","company","title","sender_name","personalization_line"] },
+  delivery: { timezone: "Europe/Madrid", send_window: { start_hour: 0, end_hour: 24 }, daily_workspace_cap: 50, sender_daily_cap: 25, per_domain_cap: 5 },
+  follow_up: { enabled: false }, reply_policy: { auto_send: false }, suppression_policy: { check_before_send: true },
+};
+const { campaignId: plCid, versionId: plVid } = await createCampaign(laraCtx, { name: "E2E Personalization" });
+await saveDraftPayload(laraCtx, plVid, plPayload as never);
+// readiness gate: copy references the variable but no lines exist yet
+let plGateBlocked = false;
+try { await requestApproval(laraCtx, plVid); } catch (e) { plGateBlocked = String(e).includes("personalization"); }
+check("readiness blocks approval when copy references a missing personalization line", plGateBlocked);
+const gen = await generatePersonalization(laraCtx, plVid);
+const plSaved = (await q(`select payload_json from campaign_versions where id=$1`, [plVid])).rows[0].payload_json;
+check("generation grounds each recipient line in stored evidence",
+  gen.generated === 1 && plSaved.recipients[0].line === "runs a weekly Ayurveda newsletter with 12k subscribers.",
+  plSaved.recipients[0].line ?? "(none)");
+const plApproval = await requestApproval(laraCtx, plVid);
+await decideApproval(adiCtx, plApproval.approvalId, "approved", "e2e personalization");
+await launchVersion(laraCtx, plVid);
+await processDueDeliveries(wsA.id);
+const plOutbox = (await q(`select body from outbox_messages where to_address='e2e.personal@example.com' order by created_at desc limit 1`)).rows[0];
+check("sent body renders the hash-locked personalization line",
+  !!plOutbox && plOutbox.body.includes("runs a weekly Ayurveda newsletter with 12k subscribers."),
+  (plOutbox?.body ?? "").slice(0, 90));
+// send-time guard: a delivery whose recipient has no line (draft never personalized,
+// scheduled directly to simulate a bypassed launch path) must skip, not send
+const { campaignId: plCid2, versionId: plVid2 } = await createCampaign(laraCtx, { name: "E2E Personalization Guard" });
+await saveDraftPayload(laraCtx, plVid2, plPayload as never);
+const plRun2 = (await q(
+  `insert into campaign_runs (campaign_version_id, status, launched_at) values ($1,'running',now()) returning id`, [plVid2])).rows[0];
+await q(
+  `insert into message_deliveries (organization_id, workspace_id, campaign_version_id, campaign_run_id, person_id, contact_point_id, sender_identity_id, step_number, scheduled_at, status, idempotency_key)
+   values ($1,$2,$3,$8,$4,$5,$6,1,now(),'scheduled',$7)`,
+  [wsA.organization_id, wsA.id, plVid2, plPerson.id, plCp.id, e2eSender, `e2e_guard_${Date.now()}`, plRun2.id]);
+const plGuard = await processDueDeliveries(wsA.id);
+const plGuardRow = (await q(
+  `select status, error_code from message_deliveries where campaign_version_id=$1 and status='skipped' order by scheduled_at desc limit 1`, [plVid2])).rows[0];
+check("send-time guard skips a delivery whose line is missing",
+  plGuard.skipped >= 1 && plGuardRow?.error_code === "personalization_missing", JSON.stringify(plGuardRow ?? {}));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 // cleanup e2e campaign so the demo state stays pristine (children first)
 const cid = campaignId;
@@ -297,11 +353,30 @@ await q(`delete from approval_requests where resource_id=$1`, [guardVid]);
 await q(`delete from campaign_version_recipients where campaign_version_id=$1`, [guardVid]);
 await q(`delete from campaign_versions where id=$1`, [guardVid]);
 await q(`delete from campaigns where id=$1`, [guardCid]);
-await q(`delete from outbox_messages where to_address like 'e2e.%@ayurvedanest.org'`);
-await q(`delete from audit_events where action like 'sender.%'`);
-await q(`delete from sender_identities where address like 'e2e.%@ayurvedanest.org'`);
 await q(`delete from suppression_entries where normalized_value='e2e.guard@example.com'`);
 await q(`delete from contact_points where normalized_value='e2e.guard@example.com'`);
 await q(`delete from people where normalized_email='e2e.guard@example.com'`);
+await q(`delete from delivery_events where message_delivery_id in (select id from message_deliveries where campaign_version_id=$1)`, [plVid]);
+await q(`delete from message_deliveries where campaign_version_id=$1`, [plVid]);
+await q(`delete from campaign_runs where campaign_version_id=$1`, [plVid]);
+await q(`delete from approval_requests where resource_id=$1`, [plVid]);
+await q(`delete from campaign_version_recipients where campaign_version_id=$1`, [plVid]);
+await q(`delete from campaign_versions where id=$1`, [plVid]);
+await q(`delete from campaigns where id=$1`, [plCid]);
+await q(`delete from outbox_messages where to_address='e2e.personal@example.com'`);
+await q(`delete from audit_events where target_id=$1`, [plVid]);
+await q(`delete from delivery_events where message_delivery_id in (select id from message_deliveries where campaign_version_id=$1)`, [plVid2]);
+await q(`delete from message_deliveries where campaign_version_id=$1`, [plVid2]);
+await q(`delete from campaign_runs where campaign_version_id=$1`, [plVid2]);
+await q(`delete from approval_requests where resource_id=$1`, [plVid2]);
+await q(`delete from campaign_version_recipients where campaign_version_id=$1`, [plVid2]);
+await q(`delete from campaign_versions where id=$1`, [plVid2]);
+await q(`delete from campaigns where id=$1`, [plCid2]);
+await q(`delete from evidence_items where subject_id in (select id from people where normalized_email='e2e.personal@example.com')`);
+await q(`delete from contact_points where normalized_value='e2e.personal@example.com'`);
+await q(`delete from people where normalized_email='e2e.personal@example.com'`);
+await q(`delete from outbox_messages where to_address like 'e2e.%@ayurvedanest.org'`);
+await q(`delete from audit_events where action like 'sender.%'`);
+await q(`delete from sender_identities where address like 'e2e.%@ayurvedanest.org'`);
 await sys.end();
 process.exit(fail > 0 ? 1 : 0);

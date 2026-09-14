@@ -1,6 +1,6 @@
 // Deterministic model adapter for development: no external AI calls, but the
 // same structured-output contract a real ModelAdapter must satisfy.
-import type { ModelAdapter, ReplyClassification } from "./types";
+import type { ModelAdapter, PersonalizationInput, ReplyClassification } from "./types";
 
 const RULES: [RegExp, ReplyClassification["category"], number][] = [
   [/unsubscribe|remove me|stop email|opt.?out/i, "unsubscribe", 0.98],
@@ -22,6 +22,15 @@ export class MockModelAdapter implements ModelAdapter {
       if (re.test(text)) return { category, confidence, rationale: `matched rule for ${category}` };
     }
     return { category: "other", confidence: 0.4, rationale: "no rule matched; low confidence" };
+  }
+  async generatePersonalization(input: PersonalizationInput) {
+    // grounded by construction: the stored evidence excerpt is the line, or a
+    // plain fact pattern from title/company when no evidence exists
+    const ev = input.evidence.map((e) => e.trim().replace(/\s+/g, " ")).filter(Boolean)[0];
+    if (ev) return { line: ev.endsWith(".") ? ev : `${ev}.` };
+    const role = input.title ? input.title.toLowerCase() : "work";
+    const where = input.company ? ` at ${input.company}` : "";
+    return { line: `Your ${role}${where} is exactly the audience we built this for.` };
   }
   async draftReply(input: { subject: string; body: string; category: string }) {
     const openers: Record<string, string> = {

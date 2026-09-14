@@ -6,7 +6,7 @@ import { withSystem } from "@/db/client";
 import { createSession, destroySession, requireWorkspace } from "@/server/auth";
 import {
   createCampaign, saveDraftPayload, requestApproval, decideApproval,
-  launchVersion, controlRun, setKillSwitch,
+  launchVersion, controlRun, setKillSwitch, generatePersonalization,
 } from "@/server/campaigns";
 import { importProspectsCsv, setContactVerification, addSuppression, liftSuppression } from "@/server/prospects";
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
@@ -47,7 +47,8 @@ export async function saveDraftAction(slug: string, versionId: string, formData:
   const recipients = [];
   for (const rid of recipientIds) {
     const [person_id, contact_point_id] = rid.split(":");
-    recipients.push({ person_id, contact_point_id });
+    const line = String(formData.get(`line:${person_id}:${contact_point_id}`) ?? "").trim();
+    recipients.push(line ? { person_id, contact_point_id, line } : { person_id, contact_point_id });
   }
   const steps = [1, 2]
     .map((n) => ({
@@ -66,7 +67,7 @@ export async function saveDraftAction(slug: string, versionId: string, formData:
     claim_ids: formData.getAll("claim_id").map(String),
     recipients,
     sequence: steps,
-    personalization_rules: { allowed_variables: ["first_name", "full_name", "company", "title", "sender_name"] },
+    personalization_rules: { allowed_variables: ["first_name", "full_name", "company", "title", "sender_name", "personalization_line"] },
     delivery: {
       timezone: String(formData.get("timezone") ?? "UTC"),
       send_window: { start_hour: Number(formData.get("start_hour") ?? 8), end_hour: Number(formData.get("end_hour") ?? 20) },
@@ -79,6 +80,12 @@ export async function saveDraftAction(slug: string, versionId: string, formData:
     suppression_policy: { check_before_send: true },
   };
   await saveDraftPayload(ctx, versionId, payload);
+  revalidatePath(`/w/${slug}`);
+}
+
+export async function generateLinesAction(slug: string, versionId: string) {
+  const ctx = await requireWorkspace(slug);
+  await generatePersonalization(ctx, versionId);
   revalidatePath(`/w/${slug}`);
 }
 

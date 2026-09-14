@@ -76,6 +76,14 @@ export async function saveDraftPayload(
     await db.query("update campaign_versions set payload_json = $2, payload_hash = null where id = $1", [
       versionId, JSON.stringify(full),
     ]);
+    // materialize the recipients manifest from the payload (same transaction):
+    // readiness, launch and the approval page all read this table
+    await db.query(`delete from campaign_version_recipients where campaign_version_id = $1`, [versionId]);
+    for (const r of payload.recipients) {
+      await db.query(
+        `insert into campaign_version_recipients (campaign_version_id, person_id, contact_point_id)
+         values ($1,$2,$3) on conflict do nothing`, [versionId, r.person_id, r.contact_point_id]);
+    }
     await audit(db, {
       organizationId: ctx.organizationId, workspaceId: ctx.workspaceId,
       actorType: "user", actorId: ctx.actor.userId,
@@ -155,7 +163,68 @@ export async function validateReadiness(db: Db, ctx: WorkspaceContext, versionId
     if (n > (payload.delivery?.per_domain_cap ?? 5))
       issues.push({ level: "warning", code: "domain_concentration", message: `${n} recipients at ${d} exceed the per-domain cap of ${payload.delivery?.per_domain_cap}; extra sends will roll to later days.` });
   }
+  const usesLine = (payload.sequence ?? []).some(
+    (st) => /\{\{\s*personalization_line\s*\}\}/.test(st.subject_template) || /\{\{\s*personalization_line\s*\}\}/.test(st.body_template));
+  if (usesLine) {
+    const missing = (payload.recipients ?? []).filter((r) => !r.line?.trim()).length;
+    if (missing > 0)
+      issues.push({ level: "error", code: "personalization_missing",
+        message: `${missing} recipient(s) have no personalization line - generate or write one, or remove {{personalization_line}} from the copy.` });
+  }
   return { ok: !issues.some((i) => i.level === "error"), issues };
+}
+
+// ---------- personalization ----------
+
+/**
+ * Draft one evidence-backed personalization line per recipient via the model
+ * adapter. Drafts/rejected versions only; lines land inside payload_json, so
+ * they are hash-locked and approved exactly like the copy they appear in.
+ */
+export async function generatePersonalization(ctx: WorkspaceContext, versionId: string) {
+  canOperate(ctx);
+  return withTenant(ctx.workspaceId, async (db) => {
+    const v = await db.query(
+      `select cv.*, c.workspace_id from campaign_versions cv join campaigns c on c.id = cv.campaign_id
+        where cv.id = $1 for update`, [versionId]);
+    const row = v.rows[0];
+    if (!row || row.workspace_id !== ctx.workspaceId) throw new DomainError("tenancy", "version not found");
+    if (row.status !== "draft" && row.status !== "rejected")
+      throw new DomainError("conflict", `version is ${row.status}; only drafts can be edited`);
+    const payload = row.payload_json as CampaignPayload;
+    if (!payload.recipients?.length) throw new DomainError("validation", "save a draft with recipients first");
+    const offer = payload.offer_id
+      ? (await db.query(`select name from offers where id = $1`, [payload.offer_id])).rows[0]
+      : null;
+    const model = new MockModelAdapter();
+    let generated = 0;
+    const recipients = [];
+    for (const r of payload.recipients) {
+      const person = (await db.query(
+        `select p.full_name, p.title, co.name as company from people p
+           left join companies co on co.id = p.company_id where p.id = $1`, [r.person_id])).rows[0];
+      if (!person) { recipients.push(r); continue; }
+      const ev = await db.query(
+        `select excerpt from evidence_items where subject_type = 'person' and subject_id = $1
+          order by observed_at desc limit 2`, [r.person_id]);
+      const { line } = await model.generatePersonalization({
+        firstName: person.full_name.split(" ")[0], fullName: person.full_name,
+        company: person.company ?? "", title: person.title ?? "",
+        offerName: offer?.name ?? null, evidence: ev.rows.map((x) => x.excerpt as string),
+      });
+      recipients.push({ ...r, line });
+      generated++;
+    }
+    await db.query(`update campaign_versions set payload_json = $2, payload_hash = null where id = $1`,
+      [versionId, JSON.stringify({ ...payload, recipients })]);
+    await audit(db, {
+      organizationId: ctx.organizationId, workspaceId: ctx.workspaceId,
+      actorType: "user", actorId: ctx.actor.userId,
+      action: "campaign_version.personalize", targetType: "campaign_version", targetId: versionId,
+      metadata: { generated, model: model.provider },
+    });
+    return { generated };
+  });
 }
 
 // ---------- approval ----------

@@ -2,7 +2,7 @@ import { requireWorkspace } from "@/server/auth";
 import { withTenant } from "@/db/client";
 import { Panel, PanelHeader, StatePill, Pill, HashChip, LinkButton, Empty } from "@/ui/primitives";
 import { validateReadiness } from "@/server/campaigns";
-import { saveDraftAction, requestApprovalAction, launchAction, runControlAction } from "@/server/actions";
+import { saveDraftAction, requestApprovalAction, launchAction, runControlAction, generateLinesAction } from "@/server/actions";
 import type { CampaignPayload } from "@/domain/payload";
 import { notFound } from "next/navigation";
 
@@ -61,6 +61,7 @@ export default async function CampaignDetail({ params }: { params: Promise<{ slu
   const approved = data.approvals.find((a: any) => a.status === "approved" && a.resource_id === latest?.id);
   const deliv = Object.fromEntries(data.deliveries.map((d: any) => [d.status, d.n]));
   const selectedRecipients = new Set((payload.recipients ?? []).map((r) => `${r.person_id}:${r.contact_point_id}`));
+  const lineByPair = new Map((payload.recipients ?? []).map((r) => [`${r.person_id}:${r.contact_point_id}`, (r as { line?: string }).line ?? ""]));
 
   return (
     <div className="space-y-6">
@@ -184,7 +185,7 @@ export default async function CampaignDetail({ params }: { params: Promise<{ slu
           </Panel>
 
           <Panel>
-            <PanelHeader title="Sequence" sub="Variables: {{first_name}}, {{full_name}}, {{company}}, {{title}}, {{sender_name}}" />
+            <PanelHeader title="Sequence" sub="Variables: {{first_name}}, {{full_name}}, {{company}}, {{title}}, {{sender_name}}, {{personalization_line}}" />
             <div className="grid grid-cols-1 gap-4 px-5 py-4 lg:grid-cols-2">
               {[1, 2].map((n) => {
                 const step = payload.sequence?.find((s) => s.step_number === n);
@@ -205,22 +206,39 @@ export default async function CampaignDetail({ params }: { params: Promise<{ slu
           </Panel>
 
           <Panel>
-            <PanelHeader title="Audience" sub="Only qualified prospects with verified contact routes pass readiness." />
+            <PanelHeader title="Audience" sub="Only qualified prospects with verified contact routes pass readiness. Personalization lines are hash-locked with the version - approvers see the exact text." />
             <table className="w-full">
-              <thead><tr><th className="th w-10"></th><th className="th">Name</th><th className="th">Company</th><th className="th">Email</th><th className="th">Contact</th><th className="th">Fit</th></tr></thead>
+              <thead><tr><th className="th w-10"></th><th className="th">Name</th><th className="th">Company</th><th className="th">Email</th><th className="th">Contact</th><th className="th">Fit</th><th className="th w-[32%]">Personalization line</th></tr></thead>
               <tbody>
-                {data.prospects.map((p: any) => (
-                  <tr key={p.contact_point_id} className="hover:bg-ink-850/60">
-                    <td className="td"><input type="checkbox" name="recipient" value={`${p.person_id}:${p.contact_point_id}`} defaultChecked={selectedRecipients.has(`${p.person_id}:${p.contact_point_id}`)} className="accent-flare" /></td>
-                    <td className="td font-medium">{p.full_name}<span className="ml-2 text-xs text-fg-faint">{p.title}</span></td>
-                    <td className="td text-fg-mute">{p.company}</td>
-                    <td className="td font-mono text-xs text-fg-mute">{p.normalized_value}</td>
-                    <td className="td"><StatePill state={p.verification_status} /></td>
-                    <td className="td">{p.disposition ? <StatePill state={p.disposition} /> : <span className="text-fg-faint text-xs">-</span>}{p.score != null && <span className="ml-2 text-xs text-fg-faint">{Number(p.score).toFixed(2)}</span>}</td>
-                  </tr>
-                ))}
+                {data.prospects.map((p: any) => {
+                  const pair = `${p.person_id}:${p.contact_point_id}`;
+                  const selected = selectedRecipients.has(pair);
+                  return (
+                    <tr key={p.contact_point_id} className="hover:bg-ink-850/60">
+                      <td className="td"><input type="checkbox" name="recipient" value={pair} defaultChecked={selected} className="accent-flare" /></td>
+                      <td className="td font-medium">{p.full_name}<span className="ml-2 text-xs text-fg-faint">{p.title}</span></td>
+                      <td className="td text-fg-mute">{p.company}</td>
+                      <td className="td font-mono text-xs text-fg-mute">{p.normalized_value}</td>
+                      <td className="td"><StatePill state={p.verification_status} /></td>
+                      <td className="td">{p.disposition ? <StatePill state={p.disposition} /> : <span className="text-fg-faint text-xs">-</span>}{p.score != null && <span className="ml-2 text-xs text-fg-faint">{Number(p.score).toFixed(2)}</span>}</td>
+                      <td className="td">
+                        {selected ? (
+                          <input name={`line:${pair}`} className="input !py-1 !text-xs" placeholder="Generate below or write one"
+                            defaultValue={lineByPair.get(pair) ?? ""} />
+                        ) : (
+                          <span className="text-[11px] text-fg-faint">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+            {(payload.recipients?.length ?? 0) > 0 && (
+              <div className="border-t border-line-soft px-5 py-3 text-[11px] text-fg-faint">
+                {(payload.recipients ?? []).filter((r) => (r as { line?: string }).line?.trim()).length} of {payload.recipients?.length} selected recipients have a line. Reference it as {"{{personalization_line}}"} in the copy.
+              </div>
+            )}
           </Panel>
 
           {data.readiness && (
@@ -240,6 +258,12 @@ export default async function CampaignDetail({ params }: { params: Promise<{ slu
           <div className="flex items-center gap-3">
             <button type="submit" className="btn-ghost">Save draft</button>
           </div>
+        </form>
+      )}
+      {editable && (payload.recipients?.length ?? 0) > 0 && (
+        <form action={generateLinesAction.bind(null, slug, latest.id)} className="-mt-2">
+          <button className="btn-ghost text-xs">Generate personalization lines from saved recipients</button>
+          <span className="ml-2 text-[11px] text-fg-faint">Uses stored evidence only - never invents facts. Review and edit the lines, then save again.</span>
         </form>
       )}
       {editable && (

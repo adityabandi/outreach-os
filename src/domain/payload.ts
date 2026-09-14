@@ -25,7 +25,7 @@ export interface CampaignPayload {
   offer_id: string | null;
   icp_id: string | null;
   claim_ids: string[];
-  recipients: { person_id: string; contact_point_id: string }[];
+  recipients: { person_id: string; contact_point_id: string; line?: string }[];
   sequence: {
     step_number: number;
     delay_minutes: number;

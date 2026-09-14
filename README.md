@@ -55,6 +55,7 @@ node --conditions=react-server --import tsx scripts/e2e.ts   # live e2e: approva
 - Requester cannot approve their own version
 - Senders verify by emailed 6-digit code (sha256 at rest, 24h expiry); campaigns refuse unverified/disabled senders at readiness AND immediately before each send
 - Every send carries a one-click unsubscribe link (HMAC-signed token bound to workspace + recipient + address); GET renders a confirmation, POST answers RFC 8058 one-click clients; suppression is idempotent and audited
+- Per-recipient personalization lines: generated from stored evidence only (never invented), editable in the builder, hash-locked into the payload approvers see; readiness blocks approval when copy references `{{personalization_line}}` without lines, and a send-time guard skips rather than sends if a line is missing
 - Suppression checked at scheduling AND immediately before send; unsubscribe replies suppress before any AI runs
 - Pause blocks every not-yet-sent delivery; workspace + org kill switches
 - Caps (workspace/sender/per-domain) enforced transactionally; sends only inside the timezone window

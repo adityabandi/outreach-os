@@ -62,9 +62,11 @@ export default async function ApprovalReview({ params }: { params: Promise<{ slu
     : null;
   const canDecide = req.status === "pending" && (ctx.isOrgOwner || ctx.roles.includes("approver")) && req.requested_by !== ctx.actor.userId;
   const samples = recipients.slice(0, 2).map((r: any) => {
+    const pline = (payload.recipients ?? []).find((pr) => pr.person_id === r.person_id && pr.contact_point_id === r.contact_point_id)?.line?.trim() ?? "";
     const vars = {
       first_name: r.full_name.split(" ")[0], full_name: r.full_name,
       company: r.company ?? "", title: r.title ?? "", sender_name: sender?.display_name ?? "",
+      personalization_line: pline,
     };
     return {
       name: r.full_name,
@@ -206,16 +208,20 @@ export default async function ApprovalReview({ params }: { params: Promise<{ slu
         <Panel>
           <PanelHeader title={`Audience manifest (${recipients.length})`} sub="The exact people this approval covers. No one else." />
           <table className="w-full">
-            <thead><tr><th className="th">Name</th><th className="th">Company</th><th className="th">Email</th><th className="th">Contact</th></tr></thead>
+            <thead><tr><th className="th">Name</th><th className="th">Company</th><th className="th">Email</th><th className="th">Contact</th><th className="th w-[34%]">Personalization line</th></tr></thead>
             <tbody>
-              {recipients.map((r: any) => (
-                <tr key={r.contact_point_id}>
-                  <td className="td font-medium">{r.full_name}</td>
-                  <td className="td text-fg-mute">{r.company}</td>
-                  <td className="td font-mono text-xs text-fg-mute">{r.normalized_value}</td>
-                  <td className="td"><StatePill state={r.verification_status} /></td>
-                </tr>
-              ))}
+              {recipients.map((r: any) => {
+                const line = (payload.recipients ?? []).find((pr) => pr.person_id === r.person_id && pr.contact_point_id === r.contact_point_id)?.line;
+                return (
+                  <tr key={r.contact_point_id}>
+                    <td className="td font-medium">{r.full_name}</td>
+                    <td className="td text-fg-mute">{r.company}</td>
+                    <td className="td font-mono text-xs text-fg-mute">{r.normalized_value}</td>
+                    <td className="td"><StatePill state={r.verification_status} /></td>
+                    <td className="td text-xs text-fg-mute">{line?.trim() ? <span>&ldquo;{line}&rdquo;</span> : <span className="text-fg-faint">-</span>}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </Panel>

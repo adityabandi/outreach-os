@@ -95,7 +95,17 @@ export async function processDueDeliveries(workspaceId: string, limit = 50) {
         company: person.rows[0].company ?? "",
         title: person.rows[0].title ?? "",
         sender_name: snd.display_name,
+        personalization_line:
+          (payload.recipients ?? []).find((r) => r.person_id === d.person_id)?.line?.trim() ?? "",
       };
+      // defense in depth: never send a template that references a missing line
+      const needsLine = /\{\{\s*personalization_line\s*\}\}/.test(step.subject_template) ||
+                        /\{\{\s*personalization_line\s*\}\}/.test(step.body_template);
+      if (needsLine && !vars.personalization_line) {
+        await db.query(`update message_deliveries set status = 'skipped', error_code = 'personalization_missing' where id = $1`, [d.id]);
+        skipped++;
+        continue;
+      }
       const subject = step.subject_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
       const bodyTemplate = step.body_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
       // transport-level footer: every marketing send carries a working one-click

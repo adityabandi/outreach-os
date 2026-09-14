@@ -27,10 +27,22 @@ export interface ReplyClassification {
   rationale: string;
 }
 
+export interface PersonalizationInput {
+  firstName: string;
+  fullName: string;
+  company: string;
+  title: string;
+  offerName: string | null;
+  evidence: string[];
+}
+
 export interface ModelAdapter {
   provider: string;
   classifyReply(input: { subject: string; body: string }): Promise<ReplyClassification>;
   draftReply(input: { subject: string; body: string; category: string }): Promise<{ body: string }>;
+  /** One short evidence-backed line per recipient. Implementations must never
+      invent facts: only the supplied fields and evidence may appear. */
+  generatePersonalization(input: PersonalizationInput): Promise<{ line: string }>;
 }
 
 export interface ContactVerificationAdapter {
