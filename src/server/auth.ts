@@ -5,11 +5,18 @@ import { redirect } from "next/navigation";
 import { withSystem } from "@/db/client";
 import type { Actor, WorkspaceContext, WorkspaceRole } from "@/domain/tenancy";
 
-const SECRET = process.env.SESSION_SECRET ?? "dev-only-secret-change-me";
+const WEAK_SECRETS = new Set(["change-me", "dev-only-secret-change-me", ""]);
+function sessionSecret(): string {
+  const s = process.env.SESSION_SECRET ?? "";
+  if (process.env.NODE_ENV === "production" && WEAK_SECRETS.has(s)) {
+    throw new Error("SESSION_SECRET must be set to a strong random value in production (see docs/deployment.md)");
+  }
+  return s || "dev-only-secret-change-me";
+}
 const COOKIE = "oos_session";
 
 function sign(value: string): string {
-  return createHmac("sha256", SECRET).update(value).digest("hex");
+  return createHmac("sha256", sessionSecret()).update(value).digest("hex");
 }
 
 export async function createSession(userId: string): Promise<void> {

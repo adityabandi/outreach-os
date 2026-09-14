@@ -1,5 +1,13 @@
 // Demo seed: two isolated workspaces with realistic campaign state.
+// DESTRUCTIVE: truncates all organizations. Dev/demo only - the guard below
+// refuses to run in a production deployment unless SEED_DEMO=true is set
+// explicitly (the compose "demo" profile does exactly that, nothing else does).
 import { Client } from "./client";
+
+if (process.env.NODE_ENV === "production" && process.env.SEED_DEMO !== "true") {
+  console.error("refusing to seed demo data with NODE_ENV=production (set SEED_DEMO=true only for a disposable demo deployment)");
+  process.exit(1);
+}
 import { payloadHash, type CampaignPayload } from "@/domain/payload";
 
 const client = new Client({

@@ -48,6 +48,15 @@ node --conditions=react-server --import tsx scripts/e2e.ts   # live e2e: approva
 - `migrations/` - full schema + immutability trigger + RLS policies
 - `src/queue/` + `src/worker/` - durable jobs with idempotency keys, retries, dead-letter
 
+## Deployment
+
+The app spins up fresh from this repo alone: `docker compose up -d` gives a clean
+production-mode deployment (Postgres, migrations, app, worker), and one idempotent
+bootstrap command creates the first admin. Demo data is strictly opt-in through the
+`--profile demo` compose profile and a code-level guard (`SEED_DEMO=true` required
+when `NODE_ENV=production`). Full environment variable reference, no-Docker path,
+upgrade and operations guidance: [docs/deployment.md](docs/deployment.md).
+
 ## Safety model (implemented + tested)
 
 - Draft -> ready_for_review -> approval_pending -> approved -> scheduled -> running; terminal states never resume

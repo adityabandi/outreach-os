@@ -1,41 +1,82 @@
+# Local/self-hosted spin-up. Plain `docker compose up -d` gives a CLEAN
+# production-mode deployment (no demo data). Demo data is opt-in via the
+# "demo" profile only:  docker compose --profile demo up -d
+# Required in .env: SESSION_SECRET (see docs/deployment.md).
+name: outreach-os
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://outreach_app:outreach_app@db:5432/outreach_os
+  SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env - see docs/deployment.md}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3100}
+  UNSUB_SECRET: ${UNSUB_SECRET:-}
+  WEBHOOK_SECRET_DEV: ${WEBHOOK_SECRET_DEV:-}
+
 services:
   db:
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: outreach
-      POSTGRES_PASSWORD: outreach
-      POSTGRES_DB: outreach_os
-    ports: ["5433:5432"]
+      POSTGRES_USER: ${POSTGRES_USER:-outreach}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-outreach}
+      POSTGRES_DB: ${POSTGRES_DB:-outreach_os}
+    ports: ["${DB_PORT:-5433}:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U outreach -d outreach_os"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20
+
   migrate:
     build: .
     depends_on: { db: { condition: service_healthy } }
     environment:
-      DATABASE_URL: postgres://outreach:outreach@db:5432/outreach_os
-    command: ["node", "--import", "tsx", "src/db/migrate.ts"]
-  seed:
+      DATABASE_URL: postgres://${POSTGRES_USER:-outreach}:${POSTGRES_PASSWORD:-outreach}@db:5432/${POSTGRES_DB:-outreach_os}
+    command: ["pnpm", "db:migrate"]
+
+  bootstrap:
+    # One-off, idempotent: creates org + workspace + first admin.
+    # BOOTSTRAP_ADMIN_EMAIL=you@co.com docker compose --profile init run --rm bootstrap
+    profiles: ["init"]
     build: .
     depends_on: { migrate: { condition: service_completed_successfully } }
     environment:
-      DATABASE_URL: postgres://outreach:outreach@db:5432/outreach_os
-    command: ["node", "--import", "tsx", "src/db/seed.ts"]
+      DATABASE_URL: postgres://${POSTGRES_USER:-outreach}:${POSTGRES_PASSWORD:-outreach}@db:5432/${POSTGRES_DB:-outreach_os}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?set BOOTSTRAP_ADMIN_EMAIL}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-}
+      BOOTSTRAP_ORG_NAME: ${BOOTSTRAP_ORG_NAME:-Default Organization}
+      BOOTSTRAP_WORKSPACE_NAME: ${BOOTSTRAP_WORKSPACE_NAME:-Main}
+      BOOTSTRAP_WORKSPACE_SLUG: ${BOOTSTRAP_WORKSPACE_SLUG:-main}
+      BOOTSTRAP_TIMEZONE: ${BOOTSTRAP_TIMEZONE:-UTC}
+
+  seed:
+    # DEMO DATA ONLY. Guarded in code too: refuses unless SEED_DEMO=true.
+    profiles: ["demo"]
+    build: .
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    environment:
+      NODE_ENV: production
+      SEED_DEMO: "true"
+      SEED_DATABASE_URL: postgres://${POSTGRES_USER:-outreach}:${POSTGRES_PASSWORD:-outreach}@db:5432/${POSTGRES_DB:-outreach_os}
+    command: ["pnpm", "db:seed"]
+
   app:
     build: .
-    depends_on: { seed: { condition: service_completed_successfully } }
-    environment:
-      DATABASE_URL: postgres://outreach_app:outreach_app@db:5432/outreach_os
-      WEBHOOK_SECRET_DEV: dev-webhook-secret
-    ports: ["3100:3100"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    environment: *app-env
+    ports: ["${APP_PORT:-3100}:3100"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   worker:
     build: .
-    depends_on: { seed: { condition: service_completed_successfully } }
+    depends_on: { migrate: { condition: service_completed_successfully } }
     environment:
-      DATABASE_URL: postgres://outreach_app:outreach_app@db:5432/outreach_os
+      <<: *app-env
+      WORKER_POLL_MS: ${WORKER_POLL_MS:-3000}
     command: ["pnpm", "worker"]
+
 volumes:
   pgdata:

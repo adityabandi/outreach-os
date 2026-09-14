@@ -2,7 +2,7 @@
 // URL-safe, and cheap to verify without a database lookup.
 import { createHmac } from "node:crypto";
 
-const SECRET = () => process.env.UNSUB_SECRET ?? process.env.SESSION_SECRET ?? "dev-only-secret-change-me";
+const SECRET = () => process.env.UNSUB_SECRET || process.env.SESSION_SECRET || "dev-only-secret-change-me";
 
 export function unsubToken(workspaceId: string, contactPointId: string, email: string): string {
   const payload = `${workspaceId}.${contactPointId}.${email.toLowerCase()}`;
