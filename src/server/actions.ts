@@ -10,7 +10,7 @@ import {
 } from "@/server/campaigns";
 import { importProspectsCsv, setContactVerification, addSuppression, liftSuppression } from "@/server/prospects";
 import { ingestReply, processDueDeliveries } from "@/server/delivery";
-import { setReplyDraftStatus, updateReplyDraft } from "@/server/replies";
+import { setReplyDraftStatus, updateReplyDraft, markReplyHandled } from "@/server/replies";
 import { updateWorkspacePolicy } from "@/server/settings";
 import { confirmSenderVerification, createSender, requestSenderVerification, setSenderStatus } from "@/server/senders";
 import { archiveOffer, createClaim, createIcp, createOffer, retireClaim } from "@/server/library";
@@ -251,6 +251,12 @@ export async function liftSuppressionAction(slug: string, entryId: string) {
 export async function processQueueAction(slug: string) {
   const ctx = await requireWorkspace(slug);
   await processDueDeliveries(ctx.workspaceId);
+  revalidatePath(`/w/${slug}`);
+}
+
+export async function markReplyHandledAction(slug: string, inboundId: string) {
+  const ctx = await requireWorkspace(slug);
+  await markReplyHandled(ctx, inboundId);
   revalidatePath(`/w/${slug}`);
 }
 

@@ -61,6 +61,8 @@ node --conditions=react-server --import tsx scripts/e2e.ts   # live e2e: approva
 - Caps (workspace/sender/per-domain) enforced transactionally; sends only inside the timezone window
 - Idempotent: unique idempotency keys per recipient+version+step; re-processing never double-sends
 - RLS proven: workspace B sees zero rows of workspace A (e2e check)
+- Conversion webhooks (Rewardful/Stripe shape): discount-code signup maps to the recipient via a registered code (email fallback), attributes the conversion to the sourcing campaign and delivery, dedupes on the external event reference, records value + currency for analytics
+- Warm replies (interested / question / negotiation) surface everywhere: sidebar count, dashboard stat, pinned to the top of the reply inbox until a human marks them handled (exactly once, audited)
 
 ## Milestones (per spec)
 

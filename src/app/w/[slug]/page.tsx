@@ -15,6 +15,12 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
     const sent = await db.query(`select count(*)::int n from message_deliveries where status = 'sent' and sent_at > now() - interval '7 days'`);
     const replies = await db.query(`select count(*)::int n from inbound_messages where received_at > now() - interval '7 days'`);
     const meetings = await db.query(`select count(*)::int n from conversions where event_type = 'meeting'`);
+    const warm = await db.query(
+      `select count(*)::int n from inbound_messages im
+        where im.handled_at is null
+          and exists (select 1 from reply_classifications rc
+                       where rc.inbound_message_id = im.id
+                         and rc.category in ('interested','question','negotiation'))`);
     const pending = await db.query(`select count(*)::int n from approval_requests where status = 'pending'`);
     const campaigns = await db.query(`select c.id, c.name, c.status,
                   (select count(*) from campaign_versions cv where cv.campaign_id = c.id) as versions
@@ -41,7 +47,7 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
       })();
     return {
       prospects: prospects.rows[0].n, qualified: qualified.rows[0].n, sent: sent.rows[0].n,
-      replies: replies.rows[0].n, meetings: meetings.rows[0].n, pending: pending.rows[0].n,
+      replies: replies.rows[0].n, meetings: meetings.rows[0].n, pending: pending.rows[0].n, warm: warm.rows[0].n,
       campaigns: campaigns.rows, activity: activity.rows, health,
     };
   });
@@ -59,13 +65,14 @@ export default async function Dashboard({ params }: { params: Promise<{ slug: st
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
         <Stat label="Prospects" value={data.prospects} />
         <Stat label="Qualified" value={data.qualified} tone="#3ECF9A" />
         <Stat label="Sent (7d)" value={data.sent} />
         <Stat label="Replies (7d)" value={data.replies} tone="#6AA8FF" />
         <Stat label="Meetings" value={data.meetings} tone="#B79CFF" />
         <Stat label="Awaiting approval" value={data.pending} tone={data.pending > 0 ? "#FFB224" : undefined} />
+        <a href={`/w/${slug}/replies`} className="block"><Stat label="Warm replies waiting" value={data.warm} tone={data.warm > 0 ? "#3ECF9A" : undefined} /></a>
       </div>
 
       {(() => {

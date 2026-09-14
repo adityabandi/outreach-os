@@ -33,7 +33,13 @@ export default async function WorkspaceLayout({
       `select count(*)::int as n from approval_requests where workspace_id = $1 and status = 'pending'`, [ctx.workspaceId]);
     const replies = await db.query(
       `select count(*)::int as n from inbound_messages where workspace_id = $1 and received_at > now() - interval '7 days'`, [ctx.workspaceId]);
-    return { running: running.rows[0].n, pending: pending.rows[0].n, replies: replies.rows[0].n };
+    const warm = await db.query(
+      `select count(*)::int as n from inbound_messages im
+        where im.workspace_id = $1 and im.handled_at is null
+          and exists (select 1 from reply_classifications rc
+                       where rc.inbound_message_id = im.id
+                         and rc.category in ('interested','question','negotiation'))`, [ctx.workspaceId]);
+    return { running: running.rows[0].n, pending: pending.rows[0].n, replies: replies.rows[0].n, warm: warm.rows[0].n };
   });
 
   const killOn = ws.kill_switch;
@@ -81,6 +87,11 @@ export default async function WorkspaceLayout({
           {stats.pending > 0 && (
             <a href={`/w/${slug}/campaigns`} className="flex items-center justify-between rounded-lg border border-flare/30 bg-flare/5 px-3 py-2 text-[11px] text-flare">
               {stats.pending} approval{stats.pending > 1 ? "s" : ""} waiting <span>→</span>
+            </a>
+          )}
+          {stats.warm > 0 && (
+            <a href={`/w/${slug}/replies`} className="flex items-center justify-between rounded-lg border border-mint/30 bg-mint/5 px-3 py-2 text-[11px] text-mint">
+              {stats.warm} warm repl{stats.warm > 1 ? "ies" : "y"} need{stats.warm > 1 ? "" : "s"} you <span>→</span>
             </a>
           )}
           <div className="flex items-center justify-between px-1 pt-1">

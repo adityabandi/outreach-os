@@ -1,7 +1,8 @@
 import { requireWorkspace } from "@/server/auth";
 import { withTenant } from "@/db/client";
 import { Panel, PanelHeader, StatePill, Pill, Empty } from "@/ui/primitives";
-import { simulateReplyAction, editReplyDraftAction, replyDraftStatusAction } from "@/server/actions";
+import { simulateReplyAction, editReplyDraftAction, replyDraftStatusAction, markReplyHandledAction } from "@/server/actions";
+import { isWarmReply } from "@/domain/replies";
 
 export const dynamic = "force-dynamic";
 
@@ -16,21 +17,26 @@ export default async function RepliesPage({ params }: { params: Promise<{ slug: 
   const ctx = await requireWorkspace(slug);
   const rows = await withTenant(ctx.workspaceId, async (db) => {
     const r = await db.query(
-      `select im.id, im.sender_contact, im.subject, im.body, im.received_at, im.thread_ref,
+      `select im.id, im.sender_contact, im.subject, im.body, im.received_at, im.thread_ref, im.handled_at,
               p.full_name, rc.category, rc.confidence,
               rd.id as draft_id, rd.body as draft_body, rd.policy_class, rd.status as draft_status
          from inbound_messages im
          left join people p on p.id = im.person_id
          left join lateral (select * from reply_classifications c where c.inbound_message_id = im.id order by created_at desc limit 1) rc on true
          left join lateral (select * from reply_drafts d where d.inbound_message_id = im.id order by row_number() over () limit 1) rd on true
-        order by im.received_at desc limit 50`);
+        order by (im.handled_at is null and rc.category in ('interested','question','negotiation')) desc,
+                 im.received_at desc limit 50`);
     return r.rows;
   });
+  const warmWaiting = rows.filter((r: any) => isWarmReply(r.category) && !r.handled_at).length;
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Reply inbox</h1>
-        <p className="mt-1 text-sm text-fg-mute">Classified automatically. Drafts are prepared, never auto-sent - sensitive categories always need a human.</p>
+        <p className="mt-1 text-sm text-fg-mute">
+          Classified automatically. Drafts are prepared, never auto-sent - sensitive categories always need a human.
+          {warmWaiting > 0 && <span className="ml-1 font-medium text-mint">{warmWaiting} warm repl{warmWaiting > 1 ? "ies" : "y"} waiting for a response.</span>}
+        </p>
       </div>
       {rows.length === 0 ? (
         <Panel><Empty title="No replies yet" /></Panel>
@@ -45,8 +51,16 @@ export default async function RepliesPage({ params }: { params: Promise<{ slug: 
                     {r.category && <Pill tone={CAT_TONE[r.category] ?? "gray"} dot>{r.category}</Pill>}
                     {r.confidence != null && <span className="text-[11px] text-fg-faint">confidence {Number(r.confidence).toFixed(2)}</span>}
                     {r.policy_class === "sensitive" && <Pill tone="amber">needs review</Pill>}
+                    {isWarmReply(r.category) && !r.handled_at && <Pill tone="green">needs response</Pill>}
+                    {r.handled_at && <Pill tone="gray">handled</Pill>}
                   </div>
                   <div className="mt-0.5 text-[11px] text-fg-faint">{r.sender_contact} · {new Date(r.received_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · thread {r.thread_ref}</div>
+                  {isWarmReply(r.category) && !r.handled_at && (
+                    <form action={markReplyHandledAction.bind(null, slug, r.id)} className="mt-2">
+                      <button className="btn-ghost !px-2.5 !py-1 text-xs text-mint">Mark handled</button>
+                      <span className="ml-2 text-[10px] text-fg-faint">Clears it from the warm-reply count once you have responded from your mail client.</span>
+                    </form>
+                  )}
                   <p className="mt-2 text-sm text-fg-soft">{r.body}</p>
                   {r.draft_body && (
                     <div className="panel-inset mt-3 p-3">
