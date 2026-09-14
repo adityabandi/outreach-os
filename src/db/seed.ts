@@ -49,6 +49,8 @@ await q(`insert into sender_identities (organization_id, workspace_id, display_n
   values ($1,$2,'Ayurveda Nest Growth','growth@ayurvedanest.org','unverified',25)`, [orgId, A]);
 await q(`insert into integrations (organization_id, workspace_id, provider, external_account_id, status, last_health_check_at)
   values ($1,$2,'mock-mailbox','dev-outbox','healthy', now())`, [orgId, A]);
+await q(`insert into integrations (organization_id, workspace_id, provider, external_account_id, encrypted_secret_ref, status)
+  values ($1,$2,'gmail','lara@ayurvedanest.org','GMAIL_REFRESH_TOKEN_LARA','pending')`, [orgId, A]);
 await q(`insert into success_events (organization_id, workspace_id, name, event_type) values
   ($1,$2,'Trial started','signup'), ($1,$2,'Paid subscription','revenue')`, [orgId, A]);
 

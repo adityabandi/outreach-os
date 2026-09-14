@@ -2,7 +2,7 @@ import "server-only";
 import { withTenant } from "@/db/client";
 import { audit } from "@/domain/audit";
 import { canAdmin, type WorkspaceContext } from "@/domain/tenancy";
-import { MockMailboxAdapter } from "@/domain/adapters/mock-mailbox";
+import { resolveMailboxAdapter } from "@/domain/adapters/resolve";
 import {
   VERIFICATION_TTL_MS,
   checkVerificationCode,
@@ -77,7 +77,7 @@ export async function requestSenderVerification(ctx: WorkspaceContext, senderId:
         where id = $1`,
       [senderId, hashVerificationCode(code), expiresAt],
     );
-    const adapter = new MockMailboxAdapter(db, ctx.workspaceId);
+    const adapter = await resolveMailboxAdapter(db, ctx.workspaceId);
     await adapter.send({
       fromAddress: s.address, fromName: s.display_name, toAddress: s.address,
       subject: "Verify your Outreach OS sender address",

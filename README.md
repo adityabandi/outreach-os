@@ -9,7 +9,7 @@ Tenant-aware AI outreach operating system. Internal-first: one organization oper
 - Next.js 15 (App Router) + TypeScript + Tailwind
 - Postgres 18 with row-level security (uuidv7 ids)
 - Durable job queue in Postgres (`job_runs`, SKIP LOCKED worker)
-- Provider adapters behind interfaces (`src/domain/adapters/`): first mailbox is the dev `mock-mailbox` (writes to the outbox table); first model is the deterministic `mock-model`
+- Provider adapters behind interfaces (`src/domain/adapters/`): the dev `mock-mailbox` (writes to the outbox table) and a real `gmail` adapter (OAuth refresh tokens live in env vars named by the integration row's secret ref, never in the database); `resolveMailboxAdapter` picks gmail when a healthy, fully-configured integration exists, otherwise mock. First model is the deterministic `mock-model`
 - Vitest unit tests + a live service-level e2e script
 
 ## Run it

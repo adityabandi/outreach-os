@@ -3,7 +3,7 @@ import { withTenant, withSystem } from "@/db/client";
 import { audit } from "@/domain/audit";
 import { matchesSuppression, withinSendWindow } from "@/domain/compliance";
 import type { CampaignPayload } from "@/domain/payload";
-import { MockMailboxAdapter } from "@/domain/adapters/mock-mailbox";
+import { resolveMailboxAdapter } from "@/domain/adapters/resolve";
 import { MockModelAdapter } from "@/domain/adapters/mock-model";
 
 /**
@@ -97,7 +97,7 @@ export async function processDueDeliveries(workspaceId: string, limit = 50) {
       };
       const subject = step.subject_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
       const body = step.body_template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k) => (vars as Record<string,string>)[k] ?? "");
-      const adapter = new MockMailboxAdapter(db, workspaceId);
+      const adapter = await resolveMailboxAdapter(db, workspaceId);
       await db.query(`update message_deliveries set status = 'sending' where id = $1`, [d.id]);
       const result = await adapter.send({
         fromAddress: snd.address, fromName: snd.display_name,

@@ -21,7 +21,7 @@ export default async function SettingsPage({
     const icps = await db.query(`select * from ideal_customer_profiles`);
     const claims = await db.query(`select ac.*, u.display_name as approver from approved_claims ac left join users u on u.id = ac.approved_by`);
     const senders = await db.query(`select * from sender_identities order by address`);
-    const integrations = await db.query(`select provider, external_account_id, status, last_health_check_at from integrations`);
+    const integrations = await db.query(`select provider, external_account_id, encrypted_secret_ref, status, last_health_check_at from integrations`);
     const policies = await db.query(`select * from workspace_policies order by created_at desc limit 1`);
     const members = await db.query(`select u.display_name, u.email, array_agg(wm.role order by wm.role) as roles from workspace_memberships wm join users u on u.id = wm.user_id group by u.id, u.display_name, u.email order by u.display_name`);
     return { ws: ws.rows[0], offers: offers.rows, icps: icps.rows, claims: claims.rows, senders: senders.rows, integrations: integrations.rows, policy: policies.rows[0], members: members.rows };
@@ -168,7 +168,12 @@ export default async function SettingsPage({
               <li key={k} className="flex items-center justify-between px-5 py-3">
                 <div>
                   <div className="text-sm font-medium">{i.provider}</div>
-                  <div className="text-xs text-fg-mute">{i.external_account_id} · checked {i.last_health_check_at ? new Date(i.last_health_check_at).toLocaleString("en-GB") : "never"}</div>
+                  <div className="text-xs text-fg-mute">
+                    {i.external_account_id} · checked {i.last_health_check_at ? new Date(i.last_health_check_at).toLocaleString("en-GB") : "never"}
+                    {i.provider === "gmail" && i.status !== "healthy" && i.encrypted_secret_ref && (
+                      <span className="text-fg-faint"> · staged - goes live when env {i.encrypted_secret_ref} (+ GMAIL_CLIENT_ID/SECRET) is set and the row is marked healthy</span>
+                    )}
+                  </div>
                 </div>
                 <StatePill state={i.status} />
               </li>
