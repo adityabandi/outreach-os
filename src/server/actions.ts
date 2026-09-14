@@ -216,7 +216,15 @@ export async function requestSenderVerificationAction(slug: string, senderId: st
 
 export async function confirmSenderVerificationAction(slug: string, senderId: string, formData: FormData) {
   const ctx = await requireWorkspace(slug);
-  await confirmSenderVerification(ctx, senderId, String(formData.get("code") ?? ""));
+  try {
+    await confirmSenderVerification(ctx, senderId, String(formData.get("code") ?? ""));
+  } catch (e: any) {
+    // a mistyped or stale code is ordinary form feedback, not an error page
+    if (e?.code === "verification_mismatch") redirect(`/w/${slug}/settings?sender_error=mismatch`);
+    if (e?.code === "verification_expired" || e?.code === "verification_no_request")
+      redirect(`/w/${slug}/settings?sender_error=expired`);
+    throw e;
+  }
   revalidatePath(`/w/${slug}/settings`);
 }
 

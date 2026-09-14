@@ -8,8 +8,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function SettingsPage({
+  params, searchParams,
+}: { params: Promise<{ slug: string }>; searchParams: Promise<{ sender_error?: string }> }) {
   const { slug } = await params;
+  const { sender_error } = await searchParams;
   const ctx = await requireWorkspace(slug);
   const data = await withTenant(ctx.workspaceId, async (db) => {
     const [ws, offers, icps, claims, senders, integrations, policies, members] = await Promise.all([
@@ -115,6 +118,12 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
         </Panel>
         <Panel>
           <PanelHeader title="Senders & integrations" sub="Campaigns only send from verified, active senders - re-checked before every send." />
+          {sender_error === "mismatch" && (
+            <p className="border-b border-line-soft px-5 py-2.5 text-xs text-rose">That code does not match - check the latest verification email and try again.</p>
+          )}
+          {sender_error === "expired" && (
+            <p className="border-b border-line-soft px-5 py-2.5 text-xs text-rose">The verification code expired - send a new one and try again.</p>
+          )}
           <ul className="divide-y divide-line-soft">
             {data.senders.map((s: any) => (
               <li key={s.id} className="px-5 py-3">
